@@ -23,7 +23,7 @@ def task_tool(
     runtime: ToolRuntime[ContextT, ThreadState],
     description: str,
     prompt: str,
-    subagent_type: Literal["general-purpose", "bash"],
+    subagent_type: Literal["general-purpose", "bash", "literature-analyzer", "data-extractor", "report-writer", "ov-retriever"],
     tool_call_id: Annotated[str, InjectedToolCallId],
     max_turns: int | None = None,
 ) -> str:
@@ -40,6 +40,17 @@ def task_tool(
       multiple dependent steps, or would benefit from isolated context.
     - **bash**: Command execution specialist for running bash commands. Use for
       git operations, build processes, or when command output would be verbose.
+    - **literature-analyzer**: Deep academic paper analysis specialist. Use for
+      structured close-reading of research papers: extracting research questions,
+      methodology, findings, limitations, and differentiators from a single paper.
+    - **data-extractor**: Structured data extraction specialist. Use for extracting
+      numerical data, performance metrics, and comparison tables from research documents
+      with high accuracy.
+    - **report-writer**: Academic report writing specialist. Use for drafting specific
+      sections of scientific reports (literature review, methodology, data comparison)
+      from provided research notes and analysis outputs.
+    - **ov-retriever**: OpenViking semantic retrieval specialist. Use for searching
+      the indexed research knowledge base via `ov find` and `ov read` commands.
 
     When to use this tool:
     - Complex tasks requiring multiple steps or tools

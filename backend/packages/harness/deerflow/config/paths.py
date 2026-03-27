@@ -6,6 +6,7 @@ from pathlib import Path
 VIRTUAL_PATH_PREFIX = "/mnt/user-data"
 
 _SAFE_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+_SAFE_USER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 class Paths:
@@ -90,6 +91,50 @@ class Paths:
     def agent_memory_file(self, name: str) -> Path:
         """Per-agent memory file: `{base_dir}/agents/{name}/memory.json`."""
         return self.agent_dir(name) / "memory.json"
+
+    # ── User-level paths ────────────────────────────────────────────────
+
+    def user_dir(self, user_id: str) -> Path:
+        """Directory for a specific user: `{base_dir}/users/{user_id}/`.
+
+        Raises:
+            ValueError: If `user_id` contains unsafe characters.
+        """
+        if not _SAFE_USER_ID_RE.match(user_id):
+            raise ValueError(f"Invalid user_id {user_id!r}: only alphanumeric characters, hyphens, and underscores are allowed.")
+        return self.base_dir / "users" / user_id
+
+    def user_memory_file(self, user_id: str) -> Path:
+        """Per-user long-term memory file: `{base_dir}/users/{user_id}/memory.json`."""
+        return self.user_dir(user_id) / "memory.json"
+
+    def user_agent_memory_file(self, user_id: str, agent_name: str) -> Path:
+        """Per-user, per-agent memory file: `{base_dir}/users/{user_id}/agents/{name}/memory.json`."""
+        return self.user_dir(user_id) / "agents" / agent_name.lower() / "memory.json"
+
+    def user_ov_workspace(self, user_id: str) -> Path:
+        """Per-user OpenViking workspace: `{base_dir}/users/{user_id}/ov-workspace/`."""
+        return self.user_dir(user_id) / "ov-workspace"
+
+    def user_profile_file(self, user_id: str) -> Path:
+        """Per-user profile: `{base_dir}/users/{user_id}/profile.json`."""
+        return self.user_dir(user_id) / "profile.json"
+
+    def session_memory_file(self, thread_id: str) -> Path:
+        """Per-thread session memory: `{base_dir}/threads/{thread_id}/session-memory.json`."""
+        return self.thread_dir(thread_id) / "session-memory.json"
+
+    def thread_ownership_file(self) -> Path:
+        """Global thread-to-user ownership mapping: `{base_dir}/thread-ownership.json`."""
+        return self.base_dir / "thread-ownership.json"
+
+    def ensure_user_dirs(self, user_id: str) -> None:
+        """Create standard directories for a user."""
+        for d in [
+            self.user_dir(user_id),
+            self.user_ov_workspace(user_id),
+        ]:
+            d.mkdir(parents=True, exist_ok=True)
 
     def thread_dir(self, thread_id: str) -> Path:
         """
