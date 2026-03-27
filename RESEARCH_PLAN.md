@@ -170,11 +170,11 @@ Step 6  用户确认后，进入 Phase 0 正式执行
 
 | 任务 | 说明 | 负责层 | 状态 |
 |------|------|--------|------|
-| 0-1 | 验证 OpenViking 服务启动（`ov ls` 可用） | 环境 | ⬜ |
-| 0-2 | 确认 `ov add-resource` 可索引 PDF 转换后的 Markdown | 集成测试 | ⬜ |
+| 0-1 | 验证 OpenViking 服务启动（`ov ls` 可用） | 环境 | ✅ |
+| 0-2 | 确认 `ov add-resource` 可索引 PDF 转换后的 Markdown | 集成测试 | ✅ |
 | 0-3 | 扩展 `task_tool.py` 的 `subagent_type` Literal，支持 4 个新类型 | 核心代码 | ✅ |
 | 0-4 | 创建 4 个子代理 Python 配置文件并注册到 `BUILTIN_SUBAGENTS` | 核心代码 | ✅ |
-| 0-5 | 调整 `config.yaml` 摘要/记忆参数 | 配置 | ⬜ |
+| 0-5 | 调整 `config.yaml` 摘要/记忆参数 | 配置 | ✅ |
 | 0-6 | 编写单元测试覆盖新子代理注册逻辑 | 测试 | ✅ |
 
 **额外交付**（超出原计划）：
@@ -182,10 +182,11 @@ Step 6  用户确认后，进入 Phase 0 正式执行
 - ✅ `ThreadDataMiddleware` 扩展：线程 ownership 原子记录 + 用户目录自动创建
 - ✅ `test_user_isolation.py`（18 个测试）
 - ✅ 修复 `test_subagent_executor.py` session 级 fixture 导致的测试污染 bug
+- ✅ 修复 `~/.openviking/ov.conf` 中 `api_base` 错误（SDK 自动追加路径，不应含 endpoint 后缀）和缺失 `"input": "multimodal"` 字段
 
 **验收标准**：`make test` 全部通过，`task(subagent_type="literature-analyzer")` 可正常调用。
 
-> 🔄 **进行中（2026-03-27）**：0-3、0-4、0-6 已完成（756 tests passed）；0-1、0-2、0-5 待完成。
+> ✅ **已完成（2026-03-27）**：所有 6 项任务通过。OV 服务 healthy，`ov add-resource` Embedding 0 error，`ov find` 语义检索返回正确结果。`config.yaml` 已创建（不入库，含 API key）。
 
 ---
 
@@ -322,7 +323,7 @@ subagents:
 | 里程碑 | 目标日期 | 实际完成 | 状态 | 交付物 |
 |--------|---------|---------|------|--------|
 | M-1：需求确认流程可用 | 2026-04-01 | 2026-03-26 | ✅ 提前完成 | SKILL.md、intake-flow.md、5 个 agent prompt、3 个报告模板 |
-| M0：基础设施就绪 | 2026-04-08 | — | 🔄 进行中 | 子代理注册 ✅ 、测试通过 ✅；OV 集成验证、config.yaml 调整待完成 |
+| M0：基础设施就绪 | 2026-04-08 | 2026-03-27 | ✅ 提前完成 | 全部 6 项任务完成；OV 服务正常、Embedding 0 error、语义检索验证通过 |
 | M1：文献摄入可用 | 2026-04-15 | — | ⬜ 待开始 | PDF 上传 → OV 索引 → 语义检索 |
 | M2：单篇分析可用 | 2026-04-22 | — | ⬜ 待开始 | literature-analyzer 输出标准化 |
 | M3：综合分析可用 | 2026-04-29 | — | ⬜ 待开始 | Gap Analysis 生成 |
@@ -365,7 +366,8 @@ git rebase main
 |------|--------|------|
 | 2026-03-25 | `8861b5f` | 创建 RESEARCH_PLAN.md，规划整体架构与 6 周研发路线 |
 | 2026-03-26 | `6e8de6f` | Phase -1：创建 intake-flow.md、SKILL.md、agent prompts、报告模板（M-1 ✅） |
-| 2026-03-27 | `096fb59` | Phase 0：注册 4 个科研子代理、扩展 task_tool Literal、Paths 用户隔离系统、ThreadDataMiddleware 扩展、修复 session 级 fixture 测试污染；756 tests passed |
+| 2026-03-27 | `096fb59` | Phase 0（Part 1）：注册 4 个科研子代理、扩展 task_tool Literal、Paths 用户隔离系统、ThreadDataMiddleware 扩展、修复 session 级 fixture 测试污染；756 tests passed |
+| 2026-03-27 | —（不入库）| Phase 0（Part 2）：启动 OV 服务、修复 embedding api_base + 补充 `"input":"multimodal"` 字段、验证 `ov add-resource` + `ov find` 全流程；创建 config.yaml 调整摘要/记忆/子代理超时参数（M0 ✅） |
 
 ---
 
