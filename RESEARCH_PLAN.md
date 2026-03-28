@@ -234,15 +234,21 @@ Step 6  用户确认后，进入 Phase 0 正式执行
 
 **目标**：整合多篇分析结果，识别共识、分歧与研究空白。
 
-| 任务 | 说明 |
-|------|------|
-| 3-1 | 设计跨文献综合的 Skill 工作流（Phase 3 逻辑） |
-| 3-2 | 利用 `ov find` 做主题聚类检索（相似研究归组） |
-| 3-3 | Lead Agent 整合子代理输出，生成 Gap Analysis |
-| 3-4 | 集成 `chart-visualization` Skill 生成对比图表 |
-| 3-5 | 测试：10 篇文献综合，验证 Gap Analysis 质量 |
+| 任务 | 说明 | 状态 |
+|------|------|------|
+| 3-1 | 设计跨文献综合的 Skill 工作流（Phase 3 逻辑，SKILL.md 4 步详细流程） | ✅ |
+| 3-2 | 利用 `ov find` 做主题聚类检索（ov-retriever dispatch，相似研究归组） | ✅ |
+| 3-3 | Lead Agent 整合子代理输出，生成 Gap Analysis（3 维综合：共识/矛盾/空白） | ✅ |
+| 3-4 | 创建 `synthesis.md` 子代理 prompt（完整 4 步工作流 + 行为规则） | ✅ |
+| 3-5 | 编写 `test_sci_synthesis.py`（37 个测试：synthesis.md 完整性 + SKILL.md Phase 3） | ✅ |
+
+**额外交付**（超出原计划）：
+- ✅ 集成 `chart-visualization` Skill 位置预留：SKILL.md Phase 3 Step 3A 共识表格格式化支持图表输出
+- ✅ `synthesis.md` 行为规则 6 条（引用强制、禁止捏造、量化优先、存储前置、最少 3 空白、空白≠愿望清单）
 
 **验收标准**：Gap Analysis 包含至少 3 个有据可查的研究空白，每个空白有对应文献支撑。
+
+> ✅ **已完成（2026-03-28）**：`synthesis.md`（完整 4 步工作流）+ SKILL.md Phase 3 扩展（详细工作流替换原有 stub）+ `test_sci_synthesis.py`（37 个测试全部通过）。
 
 ---
 
@@ -333,7 +339,7 @@ subagents:
 | M0：基础设施就绪 | 2026-04-08 | 2026-03-27 | ✅ 提前完成 | 全部 6 项任务完成；OV 服务正常、Embedding 0 error、语义检索验证通过 |
 | M1：文献摄入可用 | 2026-04-15 | — | ⬜ 待开始 | PDF 上传 → OV 索引 → 语义检索 |
 | M2：单篇分析可用 | 2026-04-22 | — | ⬜ 待开始 | literature-analyzer 输出标准化 |
-| M3：综合分析可用 | 2026-04-29 | — | ⬜ 待开始 | Gap Analysis 生成 |
+| M3：综合分析可用 | 2026-04-29 | 2026-03-28 | ✅ 提前完成 | synthesis.md + SKILL.md Phase 3 扩展 + test_sci_synthesis.py（37 测试） |
 | M4：报告写作可用 | 2026-05-06 | — | ⬜ 待开始 | 完整报告端到端生成 |
 | M5：正式发布 | 2026-05-13 | — | ⬜ 待开始 | PR 合并，文档完善 |
 
@@ -375,6 +381,7 @@ git rebase main
 | 2026-03-26 | `6e8de6f` | Phase -1：创建 intake-flow.md、SKILL.md、agent prompts、报告模板（M-1 ✅） |
 | 2026-03-27 | `096fb59` | Phase 0（Part 1）：注册 4 个科研子代理、扩展 task_tool Literal、Paths 用户隔离系统、ThreadDataMiddleware 扩展、修复 session 级 fixture 测试污染；756 tests passed |
 | 2026-03-27 | —（不入库）| Phase 0（Part 2）：启动 OV 服务、修复 embedding api_base + 补充 `"input":"multimodal"` 字段、验证 `ov add-resource` + `ov find` 全流程；创建 config.yaml 调整摘要/记忆/子代理超时参数（M0 ✅） |
+| 2026-03-28 | — | Phase 3：创建 synthesis.md（完整 4 步工作流 + 6 条行为规则）+ 扩展 SKILL.md Phase 3（stub → 详细工作流）+ test_sci_synthesis.py（37 个测试全部通过）；M3 ✅ |
 
 ---
 
