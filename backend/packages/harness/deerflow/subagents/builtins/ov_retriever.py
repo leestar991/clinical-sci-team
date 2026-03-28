@@ -50,8 +50,10 @@ You have access to the sandbox environment:
 """,
     tools=["bash"],  # All OV operations go through bash: `ov find`, `ov read`, `ov ls`
     disallowed_tools=["task", "ask_clarification", "present_files"],
-    # Recommended: use a fast, cost-efficient model (e.g., doubao-lite or gpt-4o-mini)
-    model="inherit",
+    # Use a fast, cost-efficient model for high-frequency semantic retrieval.
+    # Requires a "doubao-lite" entry in config.yaml (e.g., Doubao-lite-32k).
+    # Fallback: set to "gpt-4o-mini" if doubao-lite is unavailable.
+    model="doubao-lite",
     max_turns=15,
     timeout_seconds=180,
 )

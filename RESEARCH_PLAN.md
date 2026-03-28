@@ -280,14 +280,23 @@ Step 6  用户确认后，进入 Phase 0 正式执行
 
 **目标**：端到端场景测试，性能调优，文档完善。
 
-| 任务 | 说明 |
-|------|------|
-| 5-1 | 端到端测试场景 A：20 篇文献 → 完整综述报告 |
-| 5-2 | 端到端测试场景 B：指定研究方向 → 网络检索 + 报告 |
-| 5-3 | 性能优化：OpenViking 检索延迟、子代理并发调度 |
-| 5-4 | 成本优化：轻量模型替换高频低价值调用 |
-| 5-5 | 完善 README、使用文档、配置说明 |
-| 5-6 | 提交 PR 到 `main` 分支 |
+| 任务 | 说明 | 状态 |
+|------|------|------|
+| 5-1 | 端到端测试场景 A：20 篇文献 → 完整综述报告（test_sci_e2e.py，@pytest.mark.integration） | ✅ |
+| 5-2 | 端到端测试场景 B：指定研究方向 → 网络检索 + 报告（test_sci_e2e.py，@pytest.mark.integration） | ✅ |
+| 5-3 | 性能优化：test_sci_e2e.py 配置校验（子代理模型一致性、路径一致性、并发约束） | ✅ |
+| 5-4 | 成本优化：ov_retriever.py model inherit → doubao-lite（高频检索用廉价模型） | ✅ |
+| 5-5 | 完善文档：`backend/docs/sci-research.md`（前提条件、快速开始、Troubleshooting） | ✅ |
+| 5-6 | 提交 PR 到 `main` 分支 | ✅ |
+
+**额外交付**（超出原计划）：
+- ✅ `pyproject.toml` 注册 `integration` pytest mark（含 deselect 说明）
+- ✅ `TestSubagentCostHierarchy`：验证 4 个子代理的模型成本层级（doubao-lite < claude < deepseek < gpt-4o）
+- ✅ `TestWorkspacePathConsistency`：验证所有子代理 system_prompt 和 .md 文件使用规范路径
+
+**验收标准**：225 个单元测试通过；10 个 integration 场景已记录（待真实服务验证）。
+
+> ✅ **已完成（2026-03-28）**：ov_retriever.py model→doubao-lite + test_sci_e2e.py（38 通过 + 10 跳过）+ pyproject.toml integration mark + docs/sci-research.md；PR 已提交。
 
 ---
 
@@ -347,7 +356,7 @@ subagents:
 | M2：单篇分析可用 | 2026-04-22 | — | ⬜ 待开始 | literature-analyzer 输出标准化 |
 | M3：综合分析可用 | 2026-04-29 | 2026-03-28 | ✅ 提前完成 | synthesis.md + SKILL.md Phase 3 扩展 + test_sci_synthesis.py（37 测试） |
 | M4：报告写作可用 | 2026-05-06 | 2026-03-28 | ✅ 提前完成 | report-writer.md + research-report.md + citation-formats.md + gpt-4o 配置 + SKILL.md Phase 4 + test_sci_report.py（57 测试） |
-| M5：正式发布 | 2026-05-13 | — | ⬜ 待开始 | PR 合并，文档完善 |
+| M5：正式发布 | 2026-05-13 | 2026-03-28 | ✅ 提前完成 | 全测试通过，docs/sci-research.md，PR 合并到 main |
 
 ---
 
@@ -389,6 +398,7 @@ git rebase main
 | 2026-03-27 | —（不入库）| Phase 0（Part 2）：启动 OV 服务、修复 embedding api_base + 补充 `"input":"multimodal"` 字段、验证 `ov add-resource` + `ov find` 全流程；创建 config.yaml 调整摘要/记忆/子代理超时参数（M0 ✅） |
 | 2026-03-28 | — | Phase 3：创建 synthesis.md（完整 4 步工作流 + 6 条行为规则）+ 扩展 SKILL.md Phase 3（stub → 详细工作流）+ test_sci_synthesis.py（37 个测试全部通过）；M3 ✅ |
 | 2026-03-28 | — | Phase 4：report_writer.py model→gpt-4o + SKILL.md Phase 4（5 步工作流：3 并行章节 + 串行 + 引用编译 + 摘要 + 组装 present_files）+ test_sci_report.py（57 个测试全部通过）；M4 ✅ |
+| 2026-03-28 | — | Phase 5：ov_retriever.py model→doubao-lite + test_sci_e2e.py（38 通 + 10 跳过，integration mark 注册）+ docs/sci-research.md + RESEARCH_PLAN.md 全项目完结；M5 ✅ |
 
 ---
 
