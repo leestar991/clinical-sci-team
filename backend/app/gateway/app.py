@@ -9,6 +9,7 @@ from app.gateway.routers import (
     agents,
     artifacts,
     channels,
+    identity,
     mcp,
     memory,
     models,
@@ -145,6 +146,10 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
                 "description": "Manage IM channel integrations (Feishu, Slack, Telegram)",
             },
             {
+                "name": "identity",
+                "description": "Manage three-tier identity hierarchy (departments / users / agents) and inspect effective configs",
+            },
+            {
                 "name": "health",
                 "description": "Health check and system status endpoints",
             },
@@ -183,6 +188,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Channels API is mounted at /api/channels
     app.include_router(channels.router)
+
+    # Identity API is mounted at /api/identity
+    app.include_router(identity.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:
