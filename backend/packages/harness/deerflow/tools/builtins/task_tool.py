@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import replace
-from typing import Annotated
+from typing import Annotated, Literal
 
 from langchain.tools import InjectedToolCallId, ToolRuntime, tool
 from langgraph.config import get_stream_writer
@@ -24,7 +24,28 @@ async def task_tool(
     runtime: ToolRuntime[ContextT, ThreadState],
     description: str,
     prompt: str,
-    subagent_type: str,
+    subagent_type: Literal[
+        "general-purpose",
+        "bash",
+        "literature-analyzer",
+        "data-extractor",
+        "report-writer",
+        "ov-retriever",
+        "cmo-gpl",
+        "gpm",
+        "parkinson-clinical",
+        "trial-design",
+        "trial-statistics",
+        "data-management",
+        "drug-registration",
+        "pharmacology",
+        "toxicology",
+        "chemistry",
+        "bioinformatics",
+        "clinical-ops",
+        "quality-control",
+        "report-writing",
+    ],
     tool_call_id: Annotated[str, InjectedToolCallId],
     max_turns: int | None = None,
 ) -> str:
@@ -53,6 +74,38 @@ async def task_tool(
       from provided research notes and analysis outputs.
     - **ov-retriever**: OpenViking semantic retrieval specialist. Use for searching
       the indexed research knowledge base via `ov find` and `ov read` commands.
+
+    Virtual Clinical Development Team (use when agent is `clinical-dev-lead`):
+    - **cmo-gpl**: Chief Medical Officer / Global Project Leader. Use for clinical
+      development strategy, benefit-risk assessment, and cross-functional alignment.
+    - **gpm**: Global Project Manager. Use for program timelines, milestones, critical
+      path analysis, risk registers, and resource planning.
+    - **parkinson-clinical**: Parkinson's disease clinical expert. Use for PD
+      pathophysiology, disease staging, endpoint selection (MDS-UPDRS, PDQ-39),
+      patient population definition, and biomarker strategy (α-synuclein, NfL, GBA/LRRK2).
+    - **trial-design**: Clinical trial design specialist. Use for protocol writing,
+      randomization, blinding, endpoint selection, adaptive design, and SPIRIT/ICH E6 compliance.
+    - **trial-statistics**: Biostatistics specialist. Use for sample size calculations,
+      Statistical Analysis Plans, multiplicity control, interim analyses, and estimands (ICH E9R1).
+    - **data-management**: Clinical data management specialist. Use for CRF design,
+      CDISC CDASH/SDTM/ADaM standards, EDC setup, MedDRA/WHODrug coding, and database lock.
+    - **drug-registration**: Regulatory affairs specialist. Use for IND/NDA/MAA submissions,
+      FDA/EMA/NMPA regulatory pathways, CTD/eCTD structure, and agency interaction planning.
+    - **pharmacology**: Clinical pharmacology and PK/PD specialist. Use for PK/PD modeling,
+      ADME assessment, DDI evaluation, dose selection, and special population considerations.
+    - **toxicology**: Nonclinical safety specialist. Use for GLP toxicology study packages,
+      NOAEL/MABEL determination, genotoxicity, and ICH S1-S11 compliance.
+    - **chemistry**: CMC and pharmaceutical chemistry specialist. Use for drug substance/product
+      development, analytical methods, stability programs (ICH Q1-Q14), and CTD Module 3.
+    - **bioinformatics**: Bioinformatics and translational science specialist. Use for
+      biomarker strategy (BEST framework), genomics (GBA/LRRK2/SNCA), companion diagnostics,
+      and multi-omics analysis.
+    - **clinical-ops**: Clinical operations specialist. Use for site selection, patient
+      enrollment strategy, CRO management, risk-based monitoring (ICH E6 R2), and IMP supply.
+    - **quality-control**: GxP quality and compliance specialist. Use for GCP/GLP/GMP
+      compliance, CAPA plans, inspection readiness, TMF management, and audit programs.
+    - **report-writing**: Clinical/regulatory medical writer. Use for CSR (ICH E3), IB,
+      protocol synopses, regulatory briefing documents, and patient narratives.
 
     When to use this tool:
     - Complex tasks requiring multiple steps or tools
