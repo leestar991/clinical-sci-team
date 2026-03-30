@@ -4,6 +4,7 @@ from langchain.tools import BaseTool
 
 from deerflow.config import get_app_config
 from deerflow.reflection import resolve_variable
+from deerflow.sandbox.security import is_host_bash_allowed
 from deerflow.tools.builtins import ask_clarification_tool, present_file_tool, task_tool, view_image_tool
 from deerflow.tools.builtins.tool_search import reset_deferred_registry
 
@@ -18,6 +19,17 @@ SUBAGENT_TOOLS = [
     task_tool,
     # task_status_tool is no longer exposed to LLM (backend handles polling internally)
 ]
+
+
+def _is_host_bash_tool(tool: object) -> bool:
+    """Return True if the tool config represents a host-bash execution surface."""
+    group = getattr(tool, "group", None)
+    use = getattr(tool, "use", None)
+    if group == "bash":
+        return True
+    if use == "deerflow.sandbox.tools:bash_tool":
+        return True
+    return False
 
 
 def get_available_tools(
@@ -41,7 +53,13 @@ def get_available_tools(
         List of available tools.
     """
     config = get_app_config()
-    loaded_tools = [resolve_variable(tool.use, BaseTool) for tool in config.tools if groups is None or tool.group in groups]
+    tool_configs = [tool for tool in config.tools if groups is None or tool.group in groups]
+
+    # Do not expose host bash by default when LocalSandboxProvider is active.
+    if not is_host_bash_allowed(config):
+        tool_configs = [tool for tool in tool_configs if not _is_host_bash_tool(tool)]
+
+    loaded_tools = [resolve_variable(tool.use, BaseTool) for tool in tool_configs]
 
     # Conditionally add tools based on config
     builtin_tools = BUILTIN_TOOLS.copy()
@@ -97,5 +115,18 @@ def get_available_tools(
         except Exception as e:
             logger.error(f"Failed to get cached MCP tools: {e}")
 
-    logger.info(f"Total tools loaded: {len(loaded_tools)}, built-in tools: {len(builtin_tools)}, MCP tools: {len(mcp_tools)}")
-    return loaded_tools + builtin_tools + mcp_tools
+    # Add invoke_acp_agent tool if any ACP agents are configured
+    acp_tools: list[BaseTool] = []
+    try:
+        from deerflow.config.acp_config import get_acp_agents
+        from deerflow.tools.builtins.invoke_acp_agent_tool import build_invoke_acp_agent_tool
+
+        acp_agents = get_acp_agents()
+        if acp_agents:
+            acp_tools.append(build_invoke_acp_agent_tool(acp_agents))
+            logger.info(f"Including invoke_acp_agent tool ({len(acp_agents)} agent(s): {list(acp_agents.keys())})")
+    except Exception as e:
+        logger.warning(f"Failed to load ACP tool: {e}")
+
+    logger.info(f"Total tools loaded: {len(loaded_tools)}, built-in tools: {len(builtin_tools)}, MCP tools: {len(mcp_tools)}, ACP tools: {len(acp_tools)}")
+    return loaded_tools + builtin_tools + mcp_tools + acp_tools

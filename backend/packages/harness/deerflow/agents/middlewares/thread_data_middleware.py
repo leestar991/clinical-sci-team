@@ -1,3 +1,4 @@
+import logging
 from typing import NotRequired, override
 
 import json
@@ -10,6 +11,8 @@ from langgraph.runtime import Runtime
 
 from deerflow.agents.thread_state import ThreadDataState
 from deerflow.config.paths import Paths, get_paths
+
+logger = logging.getLogger(__name__)
 
 
 class ThreadDataMiddlewareState(AgentState):
@@ -97,7 +100,7 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
             paths = self._get_thread_paths(thread_id)
         else:
             paths = self._create_thread_directories(thread_id)
-            print(f"Created thread data directories for thread {thread_id}")
+            logger.debug("Created thread data directories for thread %s", thread_id)
 
         # Record thread ownership if user_id is available
         if user_id:

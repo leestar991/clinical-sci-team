@@ -1,7 +1,11 @@
+import logging
 from datetime import datetime
 
 from deerflow.config.agents_config import load_agent_soul
 from deerflow.skills import load_skills
+from deerflow.subagents import get_available_subagent_names
+
+logger = logging.getLogger(__name__)
 
 
 def _build_subagent_section(max_concurrent: int) -> str:
@@ -14,6 +18,19 @@ def _build_subagent_section(max_concurrent: int) -> str:
         Formatted subagent section string.
     """
     n = max_concurrent
+    bash_available = "bash" in get_available_subagent_names()
+    available_subagents = (
+        "- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.\n- **bash**: For command execution (git, build, test, deploy operations)"
+        if bash_available
+        else "- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.\n"
+        "- **bash**: Not available in the current sandbox configuration. Use direct file/web tools or switch to AioSandboxProvider for isolated shell access."
+    )
+    direct_tool_examples = "bash, ls, read_file, web_search, etc." if bash_available else "ls, read_file, web_search, etc."
+    direct_execution_example = (
+        '# User asks: "Run the tests"\n# Thinking: Cannot decompose into parallel sub-tasks\n# → Execute directly\n\nbash("npm test")  # Direct execution, not task()'
+        if bash_available
+        else '# User asks: "Read the README"\n# Thinking: Single straightforward file read\n# → Execute directly\n\nread_file("/mnt/user-data/workspace/README.md")  # Direct execution, not task()'
+    )
     return f"""<subagent_system>
 **🚀 SUBAGENT MODE ACTIVE - DECOMPOSE, DELEGATE, SYNTHESIZE**
 
@@ -37,8 +54,7 @@ You are running with subagent capabilities enabled. Your role is to be a **task 
 - **Example thinking pattern**: "I identified 6 sub-tasks. Since the limit is {n} per turn, I will launch the first {n} now, and the rest in the next turn."
 
 **Available Subagents:**
-- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.
-- **bash**: For command execution (git, build, test, deploy operations)
+{available_subagents}
 
 **Your Orchestration Strategy:**
 
@@ -86,7 +102,7 @@ For complex queries, break them down into focused sub-tasks and execute in paral
 3. **EXECUTE**: Launch ONLY the current batch (max {n} `task` calls). Do NOT launch sub-tasks from future batches.
 4. **REPEAT**: After results return, launch the next batch. Continue until all batches complete.
 5. **SYNTHESIZE**: After ALL batches are done, synthesize all results.
-6. **Cannot decompose** → Execute directly using available tools (bash, read_file, web_search, etc.)
+6. **Cannot decompose** → Execute directly using available tools ({direct_tool_examples})
 
 **⛔ VIOLATION: Launching more than {n} `task` calls in a single response is a HARD ERROR. The system WILL discard excess calls and you WILL lose work. Always batch.**
 
@@ -132,11 +148,7 @@ task(description="Oracle Cloud analysis", prompt="...", subagent_type="general-p
 **Counter-Example - Direct Execution (NO subagents):**
 
 ```python
-# User asks: "Run the tests"
-# Thinking: Cannot decompose into parallel sub-tasks
-# → Execute directly
-
-bash("npm test")  # Direct execution, not task()
+{direct_execution_example}
 ```
 
 **CRITICAL**:
@@ -250,6 +262,7 @@ You: "Deploying to staging..." [proceed]
 - For PDF, PPT, Excel, and Word files, converted Markdown versions (*.md) are available alongside originals
 - All temporary work happens in `/mnt/user-data/workspace`
 - Final deliverables must be copied to `/mnt/user-data/outputs` and presented using `present_file` tool
+{acp_section}
 </working_directory>
 
 <response_style>
@@ -363,7 +376,7 @@ def _get_memory_context(agent_name: str | None = None) -> str:
 </memory>
 """
     except Exception as e:
-        print(f"Failed to load memory context: {e}")
+        logger.error("Failed to load memory context: %s", e)
         return ""
 
 
@@ -444,6 +457,26 @@ def get_deferred_tools_prompt_section() -> str:
     return f"<available-deferred-tools>\n{names}\n</available-deferred-tools>"
 
 
+def _build_acp_section() -> str:
+    """Build the ACP agent prompt section, only if ACP agents are configured."""
+    try:
+        from deerflow.config.acp_config import get_acp_agents
+
+        agents = get_acp_agents()
+        if not agents:
+            return ""
+    except Exception:
+        return ""
+
+    return (
+        "\n**ACP Agent Tasks (invoke_acp_agent):**\n"
+        "- ACP agents (e.g. codex, claude_code) run in their own independent workspace — NOT in `/mnt/user-data/`\n"
+        "- When writing prompts for ACP agents, describe the task only — do NOT reference `/mnt/user-data` paths\n"
+        "- ACP agent results are accessible at `/mnt/acp-workspace/` (read-only) — use `ls`, `read_file`, or `bash cp` to retrieve output files\n"
+        "- To deliver ACP output to the user: copy from `/mnt/acp-workspace/<file>` to `/mnt/user-data/outputs/<file>`, then use `present_file`"
+    )
+
+
 def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagents: int = 3, *, agent_name: str | None = None, available_skills: set[str] | None = None) -> str:
     # Get memory context
     memory_context = _get_memory_context(agent_name)
@@ -476,6 +509,9 @@ def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagen
     # Get deferred tools section (tool_search)
     deferred_tools_section = get_deferred_tools_prompt_section()
 
+    # Build ACP agent section only if ACP agents are configured
+    acp_section = _build_acp_section()
+
     # Format the prompt with dynamic skills and memory
     prompt = SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "DeerFlow 2.0",
@@ -486,6 +522,7 @@ def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagen
         subagent_section=subagent_section,
         subagent_reminder=subagent_reminder,
         subagent_thinking=subagent_thinking,
+        acp_section=acp_section,
     )
 
     return prompt + f"\n<current_date>{datetime.now().strftime('%Y-%m-%d, %A')}</current_date>"

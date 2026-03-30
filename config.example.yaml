@@ -12,7 +12,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 3
+config_version: 4
 
 # ============================================================================
 # Logging
@@ -41,6 +41,8 @@ models:
   #   model: doubao-seed-1-8-251228
   #   api_base: https://ark.cn-beijing.volces.com/api/v3
   #   api_key: $VOLCENGINE_API_KEY
+  #   timeout: 600.0
+  #   max_retries: 2
   #   supports_thinking: true
   #   supports_vision: true
   #   supports_reasoning_effort: true
@@ -55,6 +57,8 @@ models:
   #   use: langchain_openai:ChatOpenAI
   #   model: gpt-4
   #   api_key: $OPENAI_API_KEY # Use environment variable
+  #   request_timeout: 600.0
+  #   max_retries: 2
   #   max_tokens: 4096
   #   temperature: 0.7
   #   supports_vision: true # Enable vision support for view_image tool
@@ -65,6 +69,8 @@ models:
   #   use: langchain_openai:ChatOpenAI
   #   model: gpt-5
   #   api_key: $OPENAI_API_KEY
+  #   request_timeout: 600.0
+  #   max_retries: 2
   #   use_responses_api: true
   #   output_version: responses/v1
   #   supports_vision: true
@@ -75,20 +81,45 @@ models:
   #   use: langchain_anthropic:ChatAnthropic
   #   model: claude-3-5-sonnet-20241022
   #   api_key: $ANTHROPIC_API_KEY
+  #   default_request_timeout: 600.0
+  #   max_retries: 2
   #   max_tokens: 8192
   #   supports_vision: true  # Enable vision support for view_image tool
   #   when_thinking_enabled:
   #     thinking:
   #       type: enabled
 
-  # Example: Google Gemini model
+  # Example: Google Gemini model (native SDK, no thinking support)
   # - name: gemini-2.5-pro
   #   display_name: Gemini 2.5 Pro
   #   use: langchain_google_genai:ChatGoogleGenerativeAI
   #   model: gemini-2.5-pro
-  #   google_api_key: $GOOGLE_API_KEY
+  #   gemini_api_key: $GEMINI_API_KEY
+  #   timeout: 600.0
+  #   max_retries: 2
   #   max_tokens: 8192
   #   supports_vision: true
+
+  # Example: Gemini model via OpenAI-compatible gateway (with thinking support)
+  # Use PatchedChatOpenAI so that tool-call thought_signature values on tool_calls
+  # are preserved across multi-turn tool-call conversations — required by the
+  # Gemini API when thinking is enabled. See:
+  # https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures
+  # - name: gemini-2.5-pro-thinking
+  #   display_name: Gemini 2.5 Pro (Thinking)
+  #   use: deerflow.models.patched_openai:PatchedChatOpenAI
+  #   model: google/gemini-2.5-pro-preview   # model name as expected by your gateway
+  #   api_key: $GEMINI_API_KEY
+  #   base_url: https://<your-openai-compat-gateway>/v1
+  #   request_timeout: 600.0
+  #   max_retries: 2
+  #   max_tokens: 16384
+  #   supports_thinking: true
+  #   supports_vision: true
+  #   when_thinking_enabled:
+  #     extra_body:
+  #       thinking:
+  #         type: enabled
 
   # Example: DeepSeek model (with thinking support)
   # - name: deepseek-v3
@@ -96,7 +127,9 @@ models:
   #   use: deerflow.models.patched_deepseek:PatchedChatDeepSeek
   #   model: deepseek-reasoner
   #   api_key: $DEEPSEEK_API_KEY
-  #   max_tokens: 16384
+  #   timeout: 600.0
+  #   max_retries: 2
+  #   max_tokens: 8192
   #   supports_thinking: true
   #   supports_vision: false  # DeepSeek V3 does not support vision
   #   when_thinking_enabled:
@@ -111,6 +144,8 @@ models:
   #   model: kimi-k2.5
   #   api_base: https://api.moonshot.cn/v1
   #   api_key: $MOONSHOT_API_KEY
+  #   timeout: 600.0
+  #   max_retries: 2
   #   max_tokens: 32768
   #   supports_thinking: true
   #   supports_vision: true  # Check your specific model's capabilities
@@ -128,6 +163,8 @@ models:
   #   model: deepseek/deepseek-v3.2
   #   api_key: $NOVITA_API_KEY
   #   base_url: https://api.novita.ai/openai
+  #   request_timeout: 600.0
+  #   max_retries: 2
   #   max_tokens: 4096
   #   temperature: 0.7
   #   supports_thinking: true
@@ -137,7 +174,7 @@ models:
   #       thinking:
   #         type: enabled
 
-  # Example: MiniMax (OpenAI-compatible)
+  # Example: MiniMax (OpenAI-compatible) - International Edition
   # MiniMax provides high-performance models with 204K context window
   # Docs: https://platform.minimax.io/docs/api-reference/text-openai-api
   # - name: minimax-m2.5
@@ -146,9 +183,12 @@ models:
   #   model: MiniMax-M2.5
   #   api_key: $MINIMAX_API_KEY
   #   base_url: https://api.minimax.io/v1
+  #   request_timeout: 600.0
+  #   max_retries: 2
   #   max_tokens: 4096
   #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
   #   supports_vision: true
+  #   supports_thinking: true
 
   # - name: minimax-m2.5-highspeed
   #   display_name: MiniMax M2.5 Highspeed
@@ -156,9 +196,42 @@ models:
   #   model: MiniMax-M2.5-highspeed
   #   api_key: $MINIMAX_API_KEY
   #   base_url: https://api.minimax.io/v1
+  #   request_timeout: 600.0
+  #   max_retries: 2
   #   max_tokens: 4096
   #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
   #   supports_vision: true
+  #   supports_thinking: true
+
+  # Example: MiniMax (OpenAI-compatible) - CN 中国区用户
+  # MiniMax provides high-performance models with 204K context window
+  # Docs: https://platform.minimaxi.com/docs/api-reference/text-openai-api
+  # - name: minimax-m2.7
+  #   display_name: MiniMax M2.7
+  #   use: langchain_openai:ChatOpenAI
+  #   model: MiniMax-M2.7
+  #   api_key: $MINIMAX_API_KEY
+  #   base_url: https://api.minimaxi.com/v1
+  #   request_timeout: 600.0
+  #   max_retries: 2
+  #   max_tokens: 4096
+  #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
+  #   supports_vision: true
+  #   supports_thinking: true
+
+  # - name: minimax-m2.7-highspeed
+  #   display_name: MiniMax M2.7 Highspeed
+  #   use: langchain_openai:ChatOpenAI
+  #   model: MiniMax-M2.7-highspeed
+  #   api_key: $MINIMAX_API_KEY
+  #   base_url: https://api.minimaxi.com/v1
+  #   request_timeout: 600.0
+  #   max_retries: 2
+  #   max_tokens: 4096
+  #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
+  #   supports_vision: true
+  #   supports_thinking: true
+
   
   # Example: OpenRouter (OpenAI-compatible)
   # OpenRouter models use the same ChatOpenAI + base_url pattern as other OpenAI-compatible gateways.
@@ -168,6 +241,8 @@ models:
   #   model: google/gemini-2.5-flash-preview
   #   api_key: $OPENAI_API_KEY
   #   base_url: https://openrouter.ai/api/v1
+  #   request_timeout: 600.0
+  #   max_retries: 2
   #   max_tokens: 8192
   #   temperature: 0.7
 
@@ -188,12 +263,18 @@ tool_groups:
 # Configure available tools for the agent to use
 
 tools:
-  # Web search tool (requires Tavily API key)
+  # Web search tool (uses DuckDuckGo, no API key required)
   - name: web_search
     group: web
-    use: deerflow.community.tavily.tools:web_search_tool
+    use: deerflow.community.ddg_search.tools:web_search_tool
     max_results: 5
-    # api_key: $TAVILY_API_KEY  # Set if needed
+
+  # Web search tool (requires Tavily API key)
+  # - name: web_search
+  #   group: web
+  #   use: deerflow.community.tavily.tools:web_search_tool
+  #   max_results: 5
+  #   # api_key: $TAVILY_API_KEY  # Set if needed
 
   # Web search tool (uses InfoQuest, requires InfoQuest API key)
   # - name: web_search
@@ -253,6 +334,8 @@ tools:
     use: deerflow.sandbox.tools:str_replace_tool
 
   # Bash execution tool
+  # Active only when using an isolated shell sandbox or when
+  # sandbox.allow_host_bash: true explicitly opts into host bash.
   - name: bash
     group: bash
     use: deerflow.sandbox.tools:bash_tool
@@ -278,6 +361,10 @@ tool_search:
 # Executes commands directly on the host machine
 sandbox:
   use: deerflow.sandbox.local:LocalSandboxProvider
+  # Host bash execution is disabled by default because LocalSandboxProvider is
+  # not a secure isolation boundary for shell access. Enable only for fully
+  # trusted, single-user local workflows.
+  allow_host_bash: false
 
 # Option 2: Container-based AIO Sandbox
 # Executes commands in isolated containers (Docker or Apple Container)
@@ -342,6 +429,34 @@ sandbox:
 #       timeout_seconds: 1800  # 30 minutes for complex multi-step tasks
 #     bash:
 #       timeout_seconds: 300   # 5 minutes for quick command execution
+
+# ============================================================================
+# ACP Agents Configuration
+# ============================================================================
+# Configure external ACP-compatible agents for the built-in `invoke_acp_agent` tool.
+
+# acp_agents:
+#   claude_code:
+#     # DeerFlow expects an ACP adapter here. The standard `claude` CLI does not
+#     # speak ACP directly. Install `claude-agent-acp` separately or use:
+#     command: npx
+#     args: ["-y", "@zed-industries/claude-agent-acp"]
+#     description: Claude Code for implementation, refactoring, and debugging
+#     model: null
+#     # auto_approve_permissions: false  # Set to true to auto-approve ACP permission requests
+#     # env:                             # Optional: inject environment variables into the agent subprocess
+#     #   ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY  # $VAR resolves from host environment
+#
+#   codex:
+#     # DeerFlow expects an ACP adapter here. The standard `codex` CLI does not
+#     # speak ACP directly. Install `codex-acp` separately or use:
+#     command: npx
+#     args: ["-y", "@zed-industries/codex-acp"]
+#     description: Codex CLI for repository tasks and code generation
+#     model: null
+#     # auto_approve_permissions: false  # Set to true to auto-approve ACP permission requests
+#     # env:                             # Optional: inject environment variables into the agent subprocess
+#     #   OPENAI_API_KEY: $OPENAI_API_KEY  # $VAR resolves from host environment
 
 # ============================================================================
 # Skills Configuration
@@ -474,13 +589,23 @@ checkpointer:
 
 # channels:
 #   # LangGraph Server URL for thread/message management (default: http://localhost:2024)
+#   # For Docker deployments, use the Docker service name instead of localhost:
+#   #   langgraph_url: http://langgraph:2024
+#   #   gateway_url: http://gateway:8001
 #   langgraph_url: http://localhost:2024
 #   # Gateway API URL for auxiliary queries like /models, /memory (default: http://localhost:8001)
 #   gateway_url: http://localhost:8001
+#   #
+#   # Docker Compose note:
+#   # If channels run inside the gateway container, use container DNS names instead
+#   # of localhost, for example:
+#   # langgraph_url: http://langgraph:2024
+#   # gateway_url: http://gateway:8001
+#   # You can also set DEER_FLOW_CHANNELS_LANGGRAPH_URL / DEER_FLOW_CHANNELS_GATEWAY_URL.
 #
 #   # Optional: default mobile/session settings for all IM channels
 #   session:
-#     assistant_id: lead_agent
+#     assistant_id: lead_agent  # or a custom agent name; custom agents route via lead_agent + agent_name
 #     config:
 #       recursion_limit: 100
 #     context:
@@ -492,6 +617,8 @@ checkpointer:
 #     enabled: false
 #     app_id: $FEISHU_APP_ID
 #     app_secret: $FEISHU_APP_SECRET
+#     # domain: https://open.feishu.cn       # China (default)
+#     # domain: https://open.larksuite.com   # International
 #
 #   slack:
 #     enabled: false
@@ -506,14 +633,14 @@ checkpointer:
 #
 #     # Optional: channel-level session overrides
 #     session:
-#       assistant_id: mobile_agent
+#       assistant_id: mobile-agent  # custom agent names are supported here too
 #       context:
 #         thinking_enabled: false
 #
 #       # Optional: per-user overrides by user_id
 #       users:
 #         "123456789":
-#           assistant_id: vip_agent
+#           assistant_id: vip-agent
 #           config:
 #             recursion_limit: 150
 #           context:
