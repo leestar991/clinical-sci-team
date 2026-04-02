@@ -26,3 +26,5 @@ config.yaml
 
 # Claude Code settings
 .claude/settings.local.json
+
+.deer-flow/

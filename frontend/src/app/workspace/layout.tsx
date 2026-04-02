@@ -15,7 +15,7 @@ export default function WorkspaceLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const [settings, setSettings] = useLocalSettings();
-  const [open, setOpen] = useState(false); // SSR default: open (matches server render)
+  const [open, setOpen] = useState(true); // SSR default: sidebar open (matches DEFAULT_LOCAL_SETTINGS.layout.sidebar_collapsed=false)
   useLayoutEffect(() => {
     // Runs synchronously before first paint on the client — no visual flash
     setOpen(!getLocalSettings().layout.sidebar_collapsed);

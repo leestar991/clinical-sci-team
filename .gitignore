@@ -60,3 +60,4 @@ ov.conf
 # OpenViking runtime state and local data
 .openviking/
 data/
+.playwright-mcp/
