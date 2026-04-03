@@ -51,6 +51,12 @@ export const zhCN: Translations = {
     exportSuccess: "对话已导出",
   },
 
+  // Home
+  home: {
+    docs: "文档",
+    blog: "博客",
+  },
+
   // Welcome
   welcome: {
     greeting: "你好，欢迎回来！",
@@ -183,6 +189,7 @@ export const zhCN: Translations = {
     nameStepContinue: "继续",
     nameStepInvalidError: "名称无效，只允许字母、数字和连字符",
     nameStepAlreadyExistsError: "已存在同名智能体",
+    nameStepNetworkError: "网络请求失败，请检查网络或后端连接",
     nameStepCheckError: "无法验证名称可用性，请稍后重试",
     nameStepBootstrapMessage:
       "新智能体的名称是 {name}，现在开始为它生成 **SOUL**。",

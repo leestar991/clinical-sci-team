@@ -40,6 +40,11 @@ export interface Translations {
     exportSuccess: string;
   };
 
+  home: {
+    docs: string;
+    blog: string;
+  };
+
   // Welcome
   welcome: {
     greeting: string;
@@ -133,6 +138,7 @@ export interface Translations {
     nameStepContinue: string;
     nameStepInvalidError: string;
     nameStepAlreadyExistsError: string;
+    nameStepNetworkError: string;
     nameStepCheckError: string;
     nameStepBootstrapMessage: string;
     agentCreated: string;
