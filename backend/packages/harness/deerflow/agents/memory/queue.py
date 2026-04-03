@@ -5,9 +5,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deerflow.config.memory_config import get_memory_config
+
+if TYPE_CHECKING:
+    from deerflow.identity.agent_identity import AgentIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +24,8 @@ class ConversationContext:
     timestamp: datetime = field(default_factory=datetime.utcnow)
     agent_name: str | None = None
     user_id: str | None = None
+    # Three-tier identity; when set, takes precedence over agent_name/user_id for path resolution
+    identity: "AgentIdentity | None" = None
 
 
 class MemoryUpdateQueue:
@@ -38,7 +43,7 @@ class MemoryUpdateQueue:
         self._timer: threading.Timer | None = None
         self._processing = False
 
-    def add(self, thread_id: str, messages: list[Any], agent_name: str | None = None, user_id: str | None = None) -> None:
+    def add(self, thread_id: str, messages: list[Any], agent_name: str | None = None, user_id: str | None = None, identity: "AgentIdentity | None" = None) -> None:
         """Add a conversation to the update queue.
 
         Args:
@@ -46,6 +51,8 @@ class MemoryUpdateQueue:
             messages: The conversation messages.
             agent_name: If provided, memory is stored per-agent. If None, uses global memory.
             user_id: If provided, memory is stored per-user. If None, uses global memory.
+            identity: Full three-tier identity; when set takes precedence over agent_name/user_id
+                      for memory path resolution.
         """
         config = get_memory_config()
         if not config.enabled:
@@ -56,6 +63,7 @@ class MemoryUpdateQueue:
             messages=messages,
             agent_name=agent_name,
             user_id=user_id,
+            identity=identity,
         )
 
         with self._lock:
@@ -119,6 +127,7 @@ class MemoryUpdateQueue:
                         thread_id=context.thread_id,
                         agent_name=context.agent_name,
                         user_id=context.user_id,
+                        identity=context.identity,
                     )
                     if success:
                         logger.info("Memory updated successfully for thread %s", context.thread_id)
