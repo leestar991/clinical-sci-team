@@ -8,6 +8,42 @@ from deerflow.subagents import get_available_subagent_names
 logger = logging.getLogger(__name__)
 
 
+_CLINICAL_SUBAGENT_NAMES = frozenset([
+    "cmo-gpl", "gpm", "parkinson-clinical", "trial-design", "trial-statistics",
+    "data-management", "drug-registration", "pharmacology", "toxicology", "chemistry",
+    "bioinformatics", "clinical-ops", "quality-control", "report-writing",
+])
+
+
+def _build_clinical_protocol_section(n: int) -> str:
+    return f"""
+**CLINICAL TEAM COLLABORATION PROTOCOL (MANDATORY when using clinical subagents):**
+
+**Step 0 — PLAN FIRST (before any task() calls):**
+Call `write_todos` to publish the complete task plan with ALL intended sub-agent assignments set to "pending".
+Format: "<专家角色>: <具体任务描述>"
+Example:
+- Trial Design: Design Phase 3 protocol structure [pending]
+- Trial Statistics: Calculate sample size and power [pending]
+- Parkinson Clinical: Define patient population and endpoints [pending]
+
+**Step 1 — DISPATCH batch (max {n} per turn):**
+Before launching a batch, call `write_todos` to update those tasks to "in_progress", then immediately call task() for each.
+
+**Step 2 — SYNTHESIZE after each batch:**
+After the batch results return, you MUST:
+a. Call `write_todos` to mark completed tasks, updating content with a 1-sentence finding:
+   "Trial Design: Phase 3 parallel-group RCT, 18-month treatment, MDS-UPDRS Part III as primary [completed]"
+b. Write a brief synthesis paragraph summarizing key findings from this batch before launching the next.
+
+**Step 3 — REPEAT** for remaining batches.
+
+**Step 4 — FINAL SYNTHESIS:** After ALL batches, integrate all findings into the final output.
+
+⛔ VIOLATION: Calling task() without first calling write_todos to show the plan is a WORKFLOW ERROR.
+"""
+
+
 def _build_subagent_section(max_concurrent: int) -> str:
     """Build the subagent system prompt section with dynamic concurrency limit.
 
@@ -18,7 +54,9 @@ def _build_subagent_section(max_concurrent: int) -> str:
         Formatted subagent section string.
     """
     n = max_concurrent
-    bash_available = "bash" in get_available_subagent_names()
+    available_names = set(get_available_subagent_names())
+    bash_available = "bash" in available_names
+    has_clinical_agents = bool(available_names & _CLINICAL_SUBAGENT_NAMES)
     available_subagents = (
         "- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.\n- **bash**: For command execution (git, build, test, deploy operations)"
         if bash_available
@@ -31,6 +69,7 @@ def _build_subagent_section(max_concurrent: int) -> str:
         if bash_available
         else '# User asks: "Read the README"\n# Thinking: Single straightforward file read\n# → Execute directly\n\nread_file("/mnt/user-data/workspace/README.md")  # Direct execution, not task()'
     )
+    clinical_protocol_section = _build_clinical_protocol_section(n) if has_clinical_agents else ""
     return f"""<subagent_system>
 **🚀 SUBAGENT MODE ACTIVE - DECOMPOSE, DELEGATE, SYNTHESIZE**
 
@@ -156,7 +195,7 @@ task(description="Oracle Cloud analysis", prompt="...", subagent_type="general-p
 - Only use `task` when you can launch 2+ subagents in parallel
 - Single task = No value from subagents = Execute directly
 - For >{n} sub-tasks, use sequential batches of {n} across multiple turns
-</subagent_system>"""
+{clinical_protocol_section}</subagent_system>"""
 
 
 SYSTEM_PROMPT_TEMPLATE = """

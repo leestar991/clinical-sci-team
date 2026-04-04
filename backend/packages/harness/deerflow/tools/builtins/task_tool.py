@@ -201,6 +201,7 @@ async def task_tool(
     writer = get_stream_writer()
     # Send Task Started message'
     writer({"type": "task_started", "task_id": task_id, "description": description})
+    writer({"type": "task_todo_sync", "action": "in_progress", "description": description, "task_id": task_id})
 
     try:
         while True:
@@ -238,16 +239,19 @@ async def task_tool(
             # Check if task completed, failed, or timed out
             if result.status == SubagentStatus.COMPLETED:
                 writer({"type": "task_completed", "task_id": task_id, "result": result.result})
+                writer({"type": "task_todo_sync", "action": "completed", "description": description, "task_id": task_id, "summary": (result.result or "")[:200]})
                 logger.info(f"[trace={trace_id}] Task {task_id} completed after {poll_count} polls")
                 cleanup_background_task(task_id)
                 return f"Task Succeeded. Result: {result.result}"
             elif result.status == SubagentStatus.FAILED:
                 writer({"type": "task_failed", "task_id": task_id, "error": result.error})
+                writer({"type": "task_todo_sync", "action": "failed", "description": description, "task_id": task_id})
                 logger.error(f"[trace={trace_id}] Task {task_id} failed: {result.error}")
                 cleanup_background_task(task_id)
                 return f"Task failed. Error: {result.error}"
             elif result.status == SubagentStatus.TIMED_OUT:
                 writer({"type": "task_timed_out", "task_id": task_id, "error": result.error})
+                writer({"type": "task_todo_sync", "action": "failed", "description": description, "task_id": task_id})
                 logger.warning(f"[trace={trace_id}] Task {task_id} timed out: {result.error}")
                 cleanup_background_task(task_id)
                 return f"Task timed out. Error: {result.error}"
@@ -266,6 +270,7 @@ async def task_tool(
                 timeout_minutes = config.timeout_seconds // 60
                 logger.error(f"[trace={trace_id}] Task {task_id} polling timed out after {poll_count} polls (should have been caught by thread pool timeout)")
                 writer({"type": "task_timed_out", "task_id": task_id})
+                writer({"type": "task_todo_sync", "action": "failed", "description": description, "task_id": task_id})
                 return f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
     except asyncio.CancelledError:
 

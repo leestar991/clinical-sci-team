@@ -255,7 +255,9 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
     # Add SubagentLimitMiddleware to truncate excess parallel task calls
     subagent_enabled = config.get("configurable", {}).get("subagent_enabled", False)
     if subagent_enabled:
-        max_concurrent_subagents = config.get("configurable", {}).get("max_concurrent_subagents", 3)
+        from deerflow.config.subagents_config import get_subagents_app_config
+
+        max_concurrent_subagents = config.get("configurable", {}).get("max_concurrent_subagents", get_subagents_app_config().max_concurrent)
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents))
 
     # LoopDetectionMiddleware — detect and break repetitive tool call loops

@@ -177,6 +177,26 @@ export function useThreadStream({
         typeof event === "object" &&
         event !== null &&
         "type" in event &&
+        event.type === "task_todo_sync"
+      ) {
+        const e = event as {
+          type: "task_todo_sync";
+          action: "in_progress" | "completed" | "failed";
+          description: string;
+          task_id: string;
+          summary?: string;
+        };
+        if (e.action === "in_progress" || e.action === "completed") {
+          const prefix = e.description.slice(0, 20);
+          setOptimisticTodoStatuses((prev) => ({ ...prev, [prefix]: e.action as "in_progress" | "completed" }));
+        }
+        return;
+      }
+
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        "type" in event &&
         event.type === "llm_retry" &&
         "message" in event &&
         typeof event.message === "string" &&
@@ -192,6 +212,7 @@ export function useThreadStream({
     },
     onFinish(state) {
       listeners.current.onFinish?.(state.values);
+      setOptimisticTodoStatuses({});
       void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
     },
   });
@@ -199,6 +220,10 @@ export function useThreadStream({
   // Optimistic messages shown before the server stream responds
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  // Optimistic todo status overrides: description prefix (20 chars) -> status
+  const [optimisticTodoStatuses, setOptimisticTodoStatuses] = useState<
+    Record<string, "in_progress" | "completed">
+  >({});
   const sendInFlightRef = useRef(false);
   // Track message count before sending so we know when server has responded
   const prevMsgCountRef = useRef(thread.messages.length);
@@ -412,12 +437,27 @@ export function useThreadStream({
     [thread, _handleOnStart, t.uploads.uploadingFiles, context, queryClient],
   );
 
+  // Apply optimistic todo status overrides to thread todos
+  const resolvedTodos = (() => {
+    const baseTodos = thread.values?.todos;
+    if (!baseTodos || Object.keys(optimisticTodoStatuses).length === 0) return baseTodos;
+    return baseTodos.map((todo) => {
+      if (!todo.content || todo.status !== "pending") return todo;
+      const prefix = todo.content.slice(0, 20);
+      const override = optimisticTodoStatuses[prefix];
+      return override ? { ...todo, status: override } : todo;
+    });
+  })();
+
   // Merge thread with optimistic messages for display
   const mergedThread =
-    optimisticMessages.length > 0
+    optimisticMessages.length > 0 || resolvedTodos !== thread.values?.todos
       ? ({
           ...thread,
-          messages: [...thread.messages, ...optimisticMessages],
+          messages: optimisticMessages.length > 0 ? [...thread.messages, ...optimisticMessages] : thread.messages,
+          values: resolvedTodos !== thread.values?.todos
+            ? { ...thread.values, todos: resolvedTodos }
+            : thread.values,
         } as typeof thread)
       : thread;
 

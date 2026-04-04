@@ -67,12 +67,26 @@ class SubagentResult:
 _background_tasks: dict[str, SubagentResult] = {}
 _background_tasks_lock = threading.Lock()
 
+# Default concurrency constant (kept for backward compatibility; runtime value from config)
+MAX_CONCURRENT_SUBAGENTS = 5
+
+
+def get_max_concurrent() -> int:
+    """Return the configured maximum concurrent subagent calls.
+
+    Reads from SubagentsAppConfig at call time so config reloads are respected.
+    """
+    from deerflow.config.subagents_config import get_subagents_app_config
+
+    return get_subagents_app_config().max_concurrent
+
+
 # Thread pool for background task scheduling and orchestration
-_scheduler_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-scheduler-")
+_scheduler_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SUBAGENTS, thread_name_prefix="subagent-scheduler-")
 
 # Thread pool for actual subagent execution (with timeout support)
 # Larger pool to avoid blocking when scheduler submits execution tasks
-_execution_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-exec-")
+_execution_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SUBAGENTS, thread_name_prefix="subagent-exec-")
 
 
 def _filter_tools(

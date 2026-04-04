@@ -433,6 +433,9 @@ sandbox:
 #   # Default timeout in seconds for all subagents (default: 900 = 15 minutes)
 #   timeout_seconds: 900
 #
+#   # Maximum number of concurrent subagent calls per Lead Agent response (default: 5, range: 2-10)
+#   max_concurrent: 5
+#
 #   # Optional per-agent timeout overrides
 #   agents:
 #     general-purpose:

@@ -25,6 +25,12 @@ class SubagentsAppConfig(BaseModel):
         ge=1,
         description="Default timeout in seconds for all subagents (default: 900 = 15 minutes)",
     )
+    max_concurrent: int = Field(
+        default=5,
+        ge=2,
+        le=10,
+        description="Maximum number of concurrent subagent calls per Lead Agent response (default: 5)",
+    )
     agents: dict[str, SubagentOverrideConfig] = Field(
         default_factory=dict,
         description="Per-agent configuration overrides keyed by agent name",
@@ -60,6 +66,6 @@ def load_subagents_config_from_dict(config_dict: dict) -> None:
 
     overrides_summary = {name: f"{override.timeout_seconds}s" for name, override in _subagents_config.agents.items() if override.timeout_seconds is not None}
     if overrides_summary:
-        logger.info(f"Subagents config loaded: default timeout={_subagents_config.timeout_seconds}s, per-agent overrides={overrides_summary}")
+        logger.info(f"Subagents config loaded: default timeout={_subagents_config.timeout_seconds}s, max_concurrent={_subagents_config.max_concurrent}, per-agent overrides={overrides_summary}")
     else:
-        logger.info(f"Subagents config loaded: default timeout={_subagents_config.timeout_seconds}s, no per-agent overrides")
+        logger.info(f"Subagents config loaded: default timeout={_subagents_config.timeout_seconds}s, max_concurrent={_subagents_config.max_concurrent}, no per-agent overrides")
