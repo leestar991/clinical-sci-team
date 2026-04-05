@@ -45,9 +45,7 @@ You have access to the sandbox environment:
 """,
     tools=["bash", "read_file", "write_file", "str_replace"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
-    # Requires a "claude-3-5-sonnet" entry in config.yaml (Claude 3.5 Sonnet for high structured accuracy).
-    # If you use a different name, update this field to match your config.yaml model name.
-    model="claude-3-5-sonnet",
+    model="claude-sonnet-4-6",
     max_turns=20,
     timeout_seconds=300,
 )

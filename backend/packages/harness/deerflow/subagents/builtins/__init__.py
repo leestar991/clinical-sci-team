@@ -17,6 +17,7 @@ from .pharmacology import PHARMACOLOGY_CONFIG
 from .quality_control import QUALITY_CONTROL_CONFIG
 from .report_writer import REPORT_WRITER_CONFIG
 from .report_writing import REPORT_WRITING_CONFIG
+from .sci_ppt_generator import SCI_PPT_GENERATOR_CONFIG
 from .toxicology import TOXICOLOGY_CONFIG
 from .trial_design import TRIAL_DESIGN_CONFIG
 from .trial_statistics import TRIAL_STATISTICS_CONFIG
@@ -43,6 +44,7 @@ __all__ = [
     "CLINICAL_OPS_CONFIG",
     "QUALITY_CONTROL_CONFIG",
     "REPORT_WRITING_CONFIG",
+    "SCI_PPT_GENERATOR_CONFIG",
 ]
 
 # Registry of built-in subagents
@@ -68,4 +70,5 @@ BUILTIN_SUBAGENTS = {
     "clinical-ops": CLINICAL_OPS_CONFIG,
     "quality-control": QUALITY_CONTROL_CONFIG,
     "report-writing": REPORT_WRITING_CONFIG,
+    "sci-ppt-generator": SCI_PPT_GENERATOR_CONFIG,
 }

@@ -66,7 +66,7 @@ Outputs: /mnt/user-data/outputs
 """,
     tools=["read_file", "write_file", "bash", "str_replace"],
     disallowed_tools=["task"],
-    model="gpt-4o",
+    model="claude-sonnet-4-6",
     max_turns=50,
     timeout_seconds=900,
 )

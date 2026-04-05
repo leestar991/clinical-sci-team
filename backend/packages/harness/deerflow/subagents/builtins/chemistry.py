@@ -62,8 +62,8 @@ Outputs: /mnt/user-data/outputs
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
     disallowed_tools=["task"],
-    # gpt-4.1：CMC 系统化规则输出，ICH Q 指南规范导向，结构化技术文件
-    model="gpt-4.1",
+    # claude-sonnet-4-6：CMC 系统化规则输出，ICH Q 指南规范导向，结构化技术文件
+    model="claude-sonnet-4-6",
     max_turns=50,
     timeout_seconds=600,
 )

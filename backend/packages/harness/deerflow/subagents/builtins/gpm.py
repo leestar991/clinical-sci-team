@@ -57,8 +57,8 @@ Outputs: /mnt/user-data/outputs
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
     disallowed_tools=["task"],
-    # gpt-4.1：CPM/PERT 定量规划，里程碑依赖关系分析，结构化时间线输出
-    model="gpt-4.1",
+    # claude-sonnet-4-6：CPM/PERT 定量规划，里程碑依赖关系分析，结构化时间线输出
+    model="claude-sonnet-4-6",
     max_turns=50,
     timeout_seconds=600,
 )

@@ -68,9 +68,7 @@ You have access to the sandbox environment:
 """,
     tools=["bash", "read_file", "tavily_web_search", "tavily_web_fetch"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
-    # Requires a "deepseek-v3" entry in config.yaml (maps to deepseek-reasoner / DeepSeek-R1).
-    # If you use a different name, update this field to match your config.yaml model name.
-    model="deepseek-v3",
+    model="claude-sonnet-4-6",
     max_turns=30,
     timeout_seconds=600,
 )

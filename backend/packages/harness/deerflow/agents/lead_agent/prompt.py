@@ -44,17 +44,30 @@ b. Write a brief synthesis paragraph summarizing key findings from this batch be
 """
 
 
-def _build_subagent_section(max_concurrent: int) -> str:
+def _build_subagent_section(max_concurrent: int, agent_name: str | None = None) -> str:
     """Build the subagent system prompt section with dynamic concurrency limit.
 
     Args:
         max_concurrent: Maximum number of concurrent subagent calls allowed per response.
+        agent_name: If provided, filter available subagents by the agent's allowed_subagents list.
 
     Returns:
         Formatted subagent section string.
     """
     n = max_concurrent
-    available_names = set(get_available_subagent_names())
+    all_available_names = set(get_available_subagent_names())
+
+    # Agent-level filtering: only show subagents the agent is allowed to use
+    if agent_name is not None and agent_name != "default":
+        try:
+            from deerflow.config.agents_config import load_agent_config as _load_cfg
+            _cfg = _load_cfg(agent_name)
+            if _cfg is not None and _cfg.allowed_subagents is not None:
+                all_available_names = all_available_names & set(_cfg.allowed_subagents)
+        except Exception:
+            pass  # fallback to full list
+
+    available_names = all_available_names
     bash_available = "bash" in available_names
     has_clinical_agents = bool(available_names & _CLINICAL_SUBAGENT_NAMES)
     available_subagents = (
@@ -548,7 +561,7 @@ def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagen
 
     # Include subagent section only if enabled (from runtime parameter)
     n = max_concurrent_subagents
-    subagent_section = _build_subagent_section(n) if subagent_enabled else ""
+    subagent_section = _build_subagent_section(n, agent_name=agent_name) if subagent_enabled else ""
 
     # Add subagent reminder to critical_reminders if enabled
     subagent_reminder = (

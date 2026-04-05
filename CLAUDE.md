@@ -15,7 +15,7 @@ NextTask 是一个**企业级虚拟数字员工平台**，将 AI Agent 技术从
 | **多租户隔离** | 三层身份模型（部门 / 用户 / Agent），全维度数据隔离 |
 | **多层级权限** | 分层配置合并，Skills/MCP 最严格原则，Persona 继承覆盖 |
 | **扩展记忆上下文** | OpenViking RAG 后端，跨会话语义知识库，本地 + OV 混合存储 |
-| **虚拟专业团队** | 16 个领域专家 Sub-Agent，Lead Agent 动态调度并行协作 |
+| **虚拟专业团队** | 4 个职能龙虾角色 + 21 个领域专家 Sub-Agent，两层 Lead Agent 动态调度 |
 | **深度研究最佳实践** | 需求确认 → 文献摄入 → 多 Agent 并行分析 → 结构化报告生成 |
 
 ---
@@ -116,12 +116,12 @@ nexttask/
 │   │   │   ├── paths.py               ← 路径计算（identity_*_dir 系列方法）
 │   │   │   ├── memory_config.py       ← MemoryConfig（backend 字段：local/ov/ov+local）
 │   │   │   ├── workspace_config.py    ← WorkspaceConfig（local/minio 后端选择）
-│   │   │   └── agents_config.py       ← 预置 Agent 配置
+│   │   │   └── agents_config.py       ← AgentConfig（含 allowed_subagents 字段）
 │   │   │
 │   │   ├── agents/
 │   │   │   ├── lead_agent/
 │   │   │   │   ├── agent.py           ← make_lead_agent()，identity 贯穿入口
-│   │   │   │   └── prompt.py          ← apply_prompt_template()，注入 Persona + Memory
+│   │   │   │   └── prompt.py          ← apply_prompt_template()，_build_subagent_section() 按 agent_name 过滤
 │   │   │   ├── memory/
 │   │   │   │   ├── updater.py         ← LLM 记忆提取，原子写入
 │   │   │   │   ├── queue.py           ← 防抖队列，per-thread 去重
@@ -141,7 +141,7 @@ nexttask/
 │   │   │       └── minio_backend.py   ← MinIO 对象存储后端
 │   │   │
 │   │   ├── subagents/
-│   │   │   ├── builtins/              ← 16 个内置 Sub-Agents
+│   │   │   ├── builtins/              ← 21 个内置 Sub-Agents（7 通用 + 14 临床）
 │   │   │   │   ├── # 通用
 │   │   │   │   ├── general_purpose.py
 │   │   │   │   ├── bash_agent.py
@@ -168,7 +168,9 @@ nexttask/
 │   │   │   └── registry.py            ← Agent 注册表
 │   │   │
 │   │   ├── skills/loader.py           ← 分层 Skills 加载（identity 过滤）[Phase 6]
-│   │   ├── tools/                     ← 工具组装（get_available_tools）
+│   │   ├── tools/
+│   │   │   ├── builtins/task_tool.py  ← task() 工具，含 allowed_subagents 运行时过滤
+│   │   │   └── ...                    ← 工具组装（get_available_tools）
 │   │   ├── mcp/                       ← MCP 集成（懒初始化 + mtime 缓存失效）
 │   │   ├── models/factory.py          ← create_chat_model（反射 + thinking/vision 支持）
 │   │   ├── community/                 ← tavily/jina/firecrawl/aio_sandbox
@@ -178,8 +180,26 @@ nexttask/
 │   │   ├── gateway/                   ← FastAPI Gateway
 │   │   │   └── routers/
 │   │   │       ├── identity.py        ← Identity API（部门/用户/Agent CRUD）[Phase 7]
+│   │   │       ├── agents.py          ← Custom Agent CRUD（支持 allowed_subagents）
 │   │   │       └── ...                ← models/mcp/skills/memory/uploads/threads
 │   │   └── channels/                  ← IM 渠道（Telegram/Slack/Feishu）
+│   │
+│   ├── .deer-flow/agents/             ← 自定义 Agent 数据目录（base_dir/agents/）
+│   │   ├── clinical-dev-lead/         ← 总协调器（全量 20 个 subagent）
+│   │   │   ├── config.yaml            ← model + tool_groups + allowed_subagents
+│   │   │   └── SOUL.md                ← 编排协议和团队结构
+│   │   ├── clinical-medicine/         ← 临床医学龙虾（parkinson + trial-design）
+│   │   │   ├── config.yaml
+│   │   │   └── SOUL.md
+│   │   ├── biostats/                  ← 数统龙虾（statistics + data-mgmt + bioinformatics）
+│   │   │   ├── config.yaml
+│   │   │   └── SOUL.md
+│   │   ├── ops-quality/               ← 运营质控龙虾（clinical-ops + quality-control）
+│   │   │   ├── config.yaml
+│   │   │   └── SOUL.md
+│   │   └── regulatory/                ← 注册龙虾（drug-reg + pharma + tox + chemistry）
+│   │       ├── config.yaml
+│   │       └── SOUL.md
 │   │
 │   └── tests/                         ← 单元测试
 │
@@ -396,57 +416,136 @@ workspace:
 
 ---
 
-## 模块六：虚拟临床开发团队（Sub-Agents）
+## 模块六：虚拟临床开发团队（Sub-Agents + 龙虾角色）
 
-16 个内置专业 Sub-Agent，通过 `task()` 工具由 Lead Agent 动态调度，最多 3 个并行。
+### 两层架构设计
 
-### 团队结构
+```
+用户
+  │
+  ▼  选择角色（前端 /workspace/agents）
+┌────────────────────────────────────────────────────┐
+│            职能龙虾 Lead Agent 层                    │
+│  clinical-medicine │ biostats │ ops-quality │ regulatory │
+│  （各有独立记忆、工具集、allowed_subagents 绑定）   │
+└──────────────────────┬─────────────────────────────┘
+                       │  task() → SubagentExecutor
+         ┌─────────────┼──────────────────┐
+         ▼             ▼                  ▼
+   领域专家层      通用工具层         临床总协调
+  （14个）        （6个）          clinical-dev-lead
+```
 
-**战略层**
-- `cmo-gpl`：首席医学官 / 全球项目负责人 — 开发策略、获益-风险、阶段推进决策
-- `gpm`：全球项目经理 — IDP 时间线、关键路径、风险登记册（CPM/PERT）
+**职能龙虾角色**（Custom Agent，用户直接对话）
 
-**临床科学层**
-- `trial-design`：临床试验设计（ICH E6/E8/E9/E10，适应性设计，SPIRIT 格式）
-- `parkinson-clinical`：帕金森病临床专家（MDS-UPDRS、α-synuclein、DaTscan）
-- `trial-statistics`：临床统计学家（SAP、MMRM、多重性控制、O'Brien-Fleming）
-- `bioinformatics`：生物信息学（NGS、CDx、BEST Framework、多组学）
+| 角色 | 名称 | 负责领域 | 可调用 Subagent |
+|------|------|----------|----------------|
+| 临床医学龙虾 | `clinical-medicine` | 临床试验设计、疾病领域专家 | parkinson-clinical, trial-design + 通用 |
+| 数统龙虾 | `biostats` | 生物统计、数据管理、生信 | trial-statistics, data-management, bioinformatics + 通用 |
+| 运营质控龙虾 | `ops-quality` | 临床运营、GxP 合规 | clinical-ops, quality-control + 通用 |
+| 注册龙虾 | `regulatory` | 药政法规、CMC、非临床 | drug-registration, pharmacology, toxicology, chemistry + 通用 |
+| 总协调器 | `clinical-dev-lead` | 全局任务编排 | 全部 20 个 subagent |
 
-**运营与质量层**
-- `clinical-ops`：临床运营（RBM/ICH E6(R2)，CRO 管理，IMP 供应链）
-- `quality-control`：质量与合规（GCP/GLP/GMP，CAPA，TMF，检查准备）
-- `data-management`：临床数据管理（CDISC CDASH/SDTM/ADaM，EDC，MedDRA）
+**每个龙虾内置的通用能力**（via 通用 subagent）：
+- **查资料**：literature-analyzer（文献解读）、data-extractor（数据提取）、ov-retriever（内部知识库）
+- **撰写**：report-writer（SAP / 方案 / CTD / 运营计划等）
+- **PPT**：bash + python-pptx（`bash` 工具组已配置）
 
-**药学与非临床层**
-- `pharmacology`：药理学（PK/PD，PBPK，NONMEM/Monolix，DDI，IVIVE）
-- `toxicology`：毒理学（GLP tox，ICH S 系列，NOAEL/MABEL，遗传毒性）
-- `chemistry`：CMC（ICH Q 系列，CTD Module 3，分析方法验证，稳定性）
-- `drug-registration`：法规事务（IND/NDA/BLA/MAA，FDA/EMA/NMPA，突破性疗法）
+### allowed_subagents 绑定机制
 
-**知识管理层**
-- `literature-analyzer`：深度文献分析（结构化解读，方法论评估）
-- `data-extractor`：结构化数据提取（数值表格，跨研究对比）
-- `ov-retriever`：OpenViking 语义检索（已索引知识库检索）
-- `report-writing`：临床文件撰写（CSR/ICH E3，IB，监管简报）
+`AgentConfig.allowed_subagents` 字段控制每个 Lead Agent 可调用的 Subagent 白名单：
+
+```yaml
+# backend/.deer-flow/agents/biostats/config.yaml
+name: biostats
+model: claude-sonnet-4-6
+tool_groups: [web, file:read, file:write, bash]
+allowed_subagents:
+  - trial-statistics
+  - data-management
+  - bioinformatics
+  - literature-analyzer
+  - data-extractor
+  - report-writer
+  - ov-retriever
+  - sci-ppt-generator
+```
+
+- `None`（缺省）：允许所有注册 subagent（向后兼容）
+- 双层过滤：**Prompt 层**（系统提示只展示允许的 subagent）+ **运行时层**（调用非白名单 subagent 返回 Error）
+
+### 21 个内置 Sub-Agent（共享池）
+
+**通用层（7个）**
+
+| Sub-Agent | 职责 |
+|-----------|------|
+| `general-purpose` | 通用多步骤任务 |
+| `bash` | 命令执行 |
+| `literature-analyzer` | 深度文献解读 |
+| `data-extractor` | 结构化数据提取 |
+| `report-writer` | 学术/医学文件撰写 |
+| `ov-retriever` | OpenViking 语义检索 |
+| `sci-ppt-generator` | 科研PPT结构/模版、发表级图表（KM/森林图/瀑布图）、架构图、文本校准 |
+
+**临床专家层（14个）**
+
+| Sub-Agent | 职责 |
+|-----------|------|
+| `cmo-gpl` | 开发策略、获益-风险、阶段推进决策 |
+| `gpm` | IDP 时间线、关键路径、风险登记册（CPM/PERT） |
+| `parkinson-clinical` | PD 病理生理、MDS-UPDRS、α-syn/NfL 生物标志物 |
+| `trial-design` | ICH E6/E8/E9 合规、适应性设计、SPIRIT 格式 |
+| `trial-statistics` | SAP、MMRM、多重性控制、O'Brien-Fleming |
+| `data-management` | CDISC CDASH/SDTM/ADaM、EDC、MedDRA |
+| `drug-registration` | IND/NDA/BLA/MAA、FDA/EMA/NMPA、CTD/eCTD |
+| `pharmacology` | PK/PD、PBPK、NONMEM/Monolix、DDI、IVIVE |
+| `toxicology` | GLP tox、ICH S 系列、NOAEL/MABEL、遗传毒性 |
+| `chemistry` | CMC、ICH Q 系列、CTD Module 3、稳定性 |
+| `bioinformatics` | NGS、CDx、BEST Framework、多组学 |
+| `clinical-ops` | RBM/ICH E6(R2)、CRO 管理、IMP 供应链 |
+| `quality-control` | GCP/GLP/GMP、CAPA、TMF、检查准备 |
+| `report-writing` | CSR/ICH E3、IB、监管简报 |
+| `sci-ppt-generator` | 科研PPT结构/模版、发表级图表（KM/森林图/瀑布图）、架构图、文本校准 |
 
 ### 典型多 Agent 协作场景
 
 ```python
-# III 期方案设计
-"请为 LRRK2-G2019S PD 人群设计一个 Phase 3 疾病修饰研究方案"
-→ Lead Agent 拆解为并行任务：
-  task(parkinson-clinical): 定义患者群体、终点、MCID
-  task(trial-design):       方案结构、随机化、盲法设计
-  task(trial-statistics):   样本量计算、SAP 框架
-  task(gpm):                关键路径、IND 到 EOP2 里程碑
-→ Lead Agent 汇总为完整方案框架
+# 通过「临床医学龙虾」设计 Phase 2b 方案
+用户 → clinical-medicine agent:
+  "为 LRRK2-G2019S PD 患者设计 Phase 2b 研究方案"
 
-# IND 申报包准备
-"准备 PD α-syn 抑制剂的 IND 申报摘要"
-→ task(toxicology):        非临床安全研究设计，NOAEL 确定
-  task(pharmacology):      FIH 剂量选择，PK 参数预测
-  task(chemistry):         CTD Module 3 摘要，规格设置
-  task(drug-registration): IND 结构，FDA 申报策略
+clinical-medicine 执行：
+  批次1（并行）：
+    task(parkinson-clinical): 定义患者群体、终点、MCID
+    task(trial-design):       方案结构、随机化、盲法设计
+  批次2（并行）：
+    task(literature-analyzer): 分析关键参考方案文献
+    task(report-writer):        输出正式方案摘要文档
+
+# 通过「注册龙虾」准备 IND 申报
+用户 → regulatory agent:
+  "准备 PD α-syn 抑制剂 IND 申报核心包"
+
+regulatory 执行：
+  批次1（并行）：
+    task(toxicology):      GLP 毒理设计，NOAEL/MABEL 估算
+    task(pharmacology):    FIH 剂量选择，PK 参数预测
+  批次2（并行）：
+    task(chemistry):       CTD Module 3 摘要，规格设定
+    task(drug-registration): IND 结构，FDA 策略建议
+  批次3：
+    task(report-writer):   整合输出 IND 申报摘要文档
+```
+
+### 扩展新团队
+
+只需新建两个文件，零 Python 改动：
+
+```bash
+mkdir backend/.deer-flow/agents/oncology-lead
+# 写入 config.yaml（指定 allowed_subagents 子集）
+# 写入 SOUL.md（定义角色和协作协议）
 ```
 
 ---
@@ -709,6 +808,8 @@ cd backend && PYTHONPATH=. uv run pytest tests/test_client.py -v
 - App（`app.*`）依赖 Harness，不反向
 - 新增 Sub-Agent 必须在 `subagents/builtins/__init__.py` 注册
 - 分层配置合并使用 `_deep_merge()`，禁止手动字典操作
+- **龙虾角色扩展**：新团队只需在 `.deer-flow/agents/` 创建 `config.yaml`（含 `allowed_subagents`）+ `SOUL.md`，无需改 Python 代码
+- **`allowed_subagents` 双层过滤**：Prompt 层（`_build_subagent_section` 按 agent_name 过滤）+ 运行时层（`task_tool` 在 `get_available_subagent_names()` 之后校验）；`Literal` 类型保持全量不变
 
 ---
 
@@ -722,6 +823,7 @@ cd backend && PYTHONPATH=. uv run pytest tests/test_client.py -v
 | Phase 4 | Memory 隔离（identity 路径 + OVMemoryBackend） | ✅ 完成 |
 | Phase 5 | Workspace 隔离（LocalBackend + MinIOBackend） | ✅ 完成 |
 | Phase 6 | Skills/MCP 分层加载（最严格原则） | ✅ 完成 |
+| Phase 6.5 | `allowed_subagents` 绑定机制 + 4 个龙虾角色 Agent | ✅ 完成 |
 | Phase 7 | Identity Gateway API + 前端多租户 UI | 📋 待开发 |
 | 深度研究 | OpenViking 知识库工作流 + sci-research Skill | 🔄 进行中 |
 | 企业功能 | SSO 集成、审计日志、配额管理 | 📋 待规划 |

@@ -45,6 +45,7 @@ async def task_tool(
         "clinical-ops",
         "quality-control",
         "report-writing",
+        "sci-ppt-generator",
     ],
     tool_call_id: Annotated[str, InjectedToolCallId],
     max_turns: int | None = None,
@@ -125,11 +126,27 @@ async def task_tool(
     """
     available_subagent_names = get_available_subagent_names()
 
+    # Agent-level subagent filtering: restrict to allowed_subagents if configured
+    if runtime is not None:
+        _agent_name_rt = runtime.config.get("metadata", {}).get("agent_name")
+        if _agent_name_rt and _agent_name_rt != "default":
+            try:
+                from deerflow.config.agents_config import load_agent_config as _load_agent_cfg
+                _agent_cfg = _load_agent_cfg(_agent_name_rt)
+                if _agent_cfg is not None and _agent_cfg.allowed_subagents is not None:
+                    _allowed_set = set(_agent_cfg.allowed_subagents)
+                    available_subagent_names = [n for n in available_subagent_names if n in _allowed_set]
+            except Exception:
+                pass  # fallback to full list on any load error
+
     # Get subagent configuration
     config = get_subagent_config(subagent_type)
     if config is None:
         available = ", ".join(available_subagent_names)
         return f"Error: Unknown subagent type '{subagent_type}'. Available: {available}"
+    if subagent_type not in available_subagent_names:
+        available = ", ".join(available_subagent_names)
+        return f"Error: Subagent '{subagent_type}' is not available for this agent. Available: {available}"
     if subagent_type == "bash" and not is_host_bash_allowed():
         return f"Error: {LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE}"
 

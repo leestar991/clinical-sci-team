@@ -50,10 +50,8 @@ You have access to the sandbox environment:
 """,
     tools=["bash"],  # All OV operations go through bash: `ov find`, `ov read`, `ov ls`
     disallowed_tools=["task", "ask_clarification", "present_files"],
-    # Use a fast, cost-efficient model for high-frequency semantic retrieval.
-    # Requires a "doubao-lite" entry in config.yaml (e.g., Doubao-lite-32k).
-    # Fallback: set to "gpt-4o-mini" if doubao-lite is unavailable.
-    model="doubao-lite",
+    # claude-haiku-4-5：快速、低成本，适合高频语义检索场景
+    model="claude-haiku-4-5",
     max_turns=15,
     timeout_seconds=180,
 )

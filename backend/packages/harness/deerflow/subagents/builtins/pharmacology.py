@@ -62,8 +62,8 @@ Outputs: /mnt/user-data/outputs
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
     disallowed_tools=["task"],
-    # gpt-4.1：PK/PD 数值建模，NONMEM/PBPK 定量推理，暴露-反应数学分析
-    model="gpt-4.1",
+    # claude-sonnet-4-6：PK/PD 数值建模，NONMEM/PBPK 定量推理，暴露-反应数学分析
+    model="claude-sonnet-4-6",
     max_turns=50,
     timeout_seconds=600,
 )

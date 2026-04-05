@@ -27,6 +27,11 @@ class AgentConfig(BaseModel):
     # - [] (explicit empty list): disable all skills
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None
+    # allowed_subagents controls which subagents this agent can dispatch to:
+    # - None (or omitted): allow all registered subagents (default, backward-compatible)
+    # - [] (explicit empty list): disable all subagent delegation
+    # - ["cmo-gpl", "gpm", ...]: only allow the listed subagents
+    allowed_subagents: list[str] | None = None
 
 
 def load_agent_config(name: str | None) -> AgentConfig | None:

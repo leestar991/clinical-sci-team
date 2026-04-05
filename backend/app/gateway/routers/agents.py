@@ -24,6 +24,7 @@ class AgentResponse(BaseModel):
     description: str = Field(default="", description="Agent description")
     model: str | None = Field(default=None, description="Optional model override")
     tool_groups: list[str] | None = Field(default=None, description="Optional tool group whitelist")
+    allowed_subagents: list[str] | None = Field(default=None, description="Optional subagent whitelist (None = all)")
     soul: str | None = Field(default=None, description="SOUL.md content (included on GET /{name})")
 
 
@@ -40,6 +41,7 @@ class AgentCreateRequest(BaseModel):
     description: str = Field(default="", description="Agent description")
     model: str | None = Field(default=None, description="Optional model override")
     tool_groups: list[str] | None = Field(default=None, description="Optional tool group whitelist")
+    allowed_subagents: list[str] | None = Field(default=None, description="Optional subagent whitelist (None = all)")
     soul: str = Field(default="", description="SOUL.md content — agent personality and behavioral guardrails")
 
 
@@ -49,6 +51,7 @@ class AgentUpdateRequest(BaseModel):
     description: str | None = Field(default=None, description="Updated description")
     model: str | None = Field(default=None, description="Updated model override")
     tool_groups: list[str] | None = Field(default=None, description="Updated tool group whitelist")
+    allowed_subagents: list[str] | None = Field(default=None, description="Updated subagent whitelist")
     soul: str | None = Field(default=None, description="Updated SOUL.md content")
 
 
@@ -84,6 +87,7 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         description=agent_cfg.description,
         model=agent_cfg.model,
         tool_groups=agent_cfg.tool_groups,
+        allowed_subagents=agent_cfg.allowed_subagents,
         soul=soul,
     )
 
@@ -200,6 +204,8 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
             config_data["model"] = request.model
         if request.tool_groups is not None:
             config_data["tool_groups"] = request.tool_groups
+        if request.allowed_subagents is not None:
+            config_data["allowed_subagents"] = request.allowed_subagents
 
         config_file = agent_dir / "config.yaml"
         with open(config_file, "w", encoding="utf-8") as f:
@@ -255,7 +261,7 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
 
     try:
         # Update config if any config fields changed
-        config_changed = any(v is not None for v in [request.description, request.model, request.tool_groups])
+        config_changed = any(v is not None for v in [request.description, request.model, request.tool_groups, request.allowed_subagents])
 
         if config_changed:
             updated: dict = {
@@ -269,6 +275,10 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
             new_tool_groups = request.tool_groups if request.tool_groups is not None else agent_cfg.tool_groups
             if new_tool_groups is not None:
                 updated["tool_groups"] = new_tool_groups
+
+            new_allowed_subagents = request.allowed_subagents if request.allowed_subagents is not None else agent_cfg.allowed_subagents
+            if new_allowed_subagents is not None:
+                updated["allowed_subagents"] = new_allowed_subagents
 
             config_file = agent_dir / "config.yaml"
             with open(config_file, "w", encoding="utf-8") as f:
