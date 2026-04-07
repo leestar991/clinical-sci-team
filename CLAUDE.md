@@ -149,6 +149,7 @@ nexttask/
 │   │   │   │   ├── data_extractor.py
 │   │   │   │   ├── report_writer.py
 │   │   │   │   ├── ov_retriever.py
+│   │   │   │   ├── sci_ppt_generator.py
 │   │   │   │   ├── # 虚拟临床开发团队
 │   │   │   │   ├── cmo_gpl.py         ← 首席医学官 / 全球项目负责人
 │   │   │   │   ├── gpm.py             ← 全球项目经理
@@ -164,12 +165,16 @@ nexttask/
 │   │   │   │   ├── clinical_ops.py
 │   │   │   │   ├── quality_control.py
 │   │   │   │   └── report_writing.py
-│   │   │   ├── executor.py            ← 双线程池并发执行（max 3）
+│   │   │   ├── config.py              ← SubagentConfig（含 workspace_isolated / session/shared memory 字段）
+│   │   │   ├── executor.py            ← 双线程池并发执行（max 3）；工作区隔离 + 记忆写入钩子
+│   │   │   ├── session_memory.py      ← 会话级记忆：per-thread per-subagent 上下文累积 [Phase 6.8]
+│   │   │   ├── shared_memory.py       ← 公共记忆：per-thread 跨-subagent 结果汇聚 [Phase 6.8]
 │   │   │   └── registry.py            ← Agent 注册表
 │   │   │
 │   │   ├── skills/loader.py           ← 分层 Skills 加载（identity 过滤）[Phase 6]
 │   │   ├── tools/
-│   │   │   ├── builtins/task_tool.py  ← task() 工具，含 allowed_subagents 运行时过滤
+│   │   │   ├── builtins/task_tool.py  ← task() 工具，含 session context 注入 + allowed_subagents 过滤
+│   │   │   ├── builtins/aggregate_tool.py ← aggregate_results() 工具，vote/merge/adjudicate [Phase 6.8]
 │   │   │   └── ...                    ← 工具组装（get_available_tools）
 │   │   ├── mcp/                       ← MCP 集成（懒初始化 + mtime 缓存失效）
 │   │   ├── models/factory.py          ← create_chat_model（反射 + thinking/vision 支持）
@@ -508,6 +513,64 @@ allowed_subagents:
 | `report-writing` | CSR/ICH E3、IB、监管简报 |
 | `sci-ppt-generator` | 科研PPT结构/模版、发表级图表（KM/森林图/瀑布图）、架构图、文本校准 |
 
+### Subagent 增强协作体系（Phase 6.8）
+
+三项运行时能力，让多 Subagent 协作更连贯、结果更可聚合：
+
+#### 1. 独立工作子目录（Isolated Workspace）
+
+每个 Subagent 在 `workspace/{subagent_name}/` 下独立写作，避免并发文件冲突：
+- `uploads/` 保持共享：Lead 上传的文件所有 Subagent 可读取
+- `outputs/` 保持共享：Subagent 产出物可被 `present_files` 统一展示
+- `workspace/` 按名称隔离：`trial-statistics/`、`pharmacology/` 各自独立
+
+控制字段：`SubagentConfig.workspace_isolated = True`（默认开启）
+
+#### 2. 会话级记忆（Session Memory）
+
+同一 thread 内，多次调用同一 Subagent 时，历史上下文自动注入 prompt：
+
+```
+第1次 task(trial-statistics, "计算样本量")
+  → Subagent 执行，结果写入 subagent_sessions/trial-statistics.json
+  → accumulated_context: "N=180/arm, MMRM, α=0.05, power=80%..."
+
+第2次 task(trial-statistics, "调整脱落假设后重算")
+  → task_tool.py 加载 session memory
+  → 注入: <session_memory>[Prior sessions: 1] N=180/arm...</session_memory>
+  → Subagent 在历史上下文基础上继续工作
+```
+
+存储路径：`{thread_dir}/subagent_sessions/{subagent_name}.json`
+控制字段：`SubagentConfig.session_memory_enabled = True`（默认开启）
+
+#### 3. 公共记忆空间 + 结果聚合（Shared Memory + Aggregation）
+
+每次 Subagent 任务成功后，摘要自动写入线程级公共记忆：
+
+```
+task(trial-statistics) 完成 → shared_memory.json 追加 entry
+task(pharmacology)   完成 → shared_memory.json 追加 entry
+task(toxicology)     完成 → shared_memory.json 追加 entry
+
+aggregate_results(strategy="adjudicate", topic="FIH 剂量推导")
+  → 读取 3 条 entries
+  → LLM 裁决：识别统计/PK/毒理之间的关键冲突
+  → 输出综合结论
+```
+
+三种聚合策略：
+| 策略 | 适用场景 | 说明 |
+|------|---------|------|
+| `merge` | 多角度分析需综合 | 将各 Subagent 输出整合为统一结论 |
+| `vote` | 需确认多方是否一致 | 统计多数立场，列出少数意见 |
+| `adjudicate` | 多方结果有冲突 | 识别矛盾，逐项裁决，说明理由 |
+
+存储路径：`{thread_dir}/shared_memory.json`（文件锁保证并发安全）
+控制字段：`SubagentConfig.shared_memory_write = True`（默认开启）
+
+---
+
 ### 典型多 Agent 协作场景
 
 ```python
@@ -523,19 +586,30 @@ clinical-medicine 执行：
     task(literature-analyzer): 分析关键参考方案文献
     task(report-writer):        输出正式方案摘要文档
 
-# 通过「注册龙虾」准备 IND 申报
+# 通过「注册龙虾」准备 IND 申报（含结果聚合）
 用户 → regulatory agent:
-  "准备 PD α-syn 抑制剂 IND 申报核心包"
+  "准备 PD α-syn 抑制剂 IND 申报核心包，最后给出综合建议"
 
 regulatory 执行：
   批次1（并行）：
-    task(toxicology):      GLP 毒理设计，NOAEL/MABEL 估算
-    task(pharmacology):    FIH 剂量选择，PK 参数预测
+    task(toxicology):        GLP 毒理设计，NOAEL/MABEL 估算
+    task(pharmacology):      FIH 剂量选择，PK 参数预测
   批次2（并行）：
-    task(chemistry):       CTD Module 3 摘要，规格设定
+    task(chemistry):         CTD Module 3 摘要，规格设定
     task(drug-registration): IND 结构，FDA 策略建议
-  批次3：
-    task(report-writer):   整合输出 IND 申报摘要文档
+  批次3（聚合）：
+    aggregate_results(strategy="adjudicate", topic="FIH 首次人体剂量推导")
+      → 裁决 PK / 毒理之间的剂量估算冲突
+    task(report-writer):     整合聚合结论，输出 IND 申报摘要文档
+
+# 通过「数统龙虾」多轮迭代 SAP（会话记忆示例）
+用户 → biostats agent:
+  第1轮: "为 Phase 2b PD 研究设计 SAP 框架"
+  第2轮: "添加中期分析方案，使用 O'Brien-Fleming 边界"
+  第3轮: "调整主终点为 UPDRS Part III，重新计算样本量"
+
+# trial-statistics 每次调用都恢复上一轮的工作上下文
+# shared_memory.json 记录三轮迭代的关键节点，可随时 aggregate_results
 ```
 
 ### 扩展新团队
@@ -784,6 +858,8 @@ cd backend && PYTHONPATH=. uv run pytest tests/test_client.py -v
 | `test_client.py` | DeerFlowClient + Gateway 一致性（77 个测试） |
 | `test_memory_updater.py` | 记忆提取和去重 |
 | `test_subagent_executor.py` | Sub-Agent 并发执行 |
+| `test_session_memory.py` | 会话级记忆 load/save，原子 I/O，多 Subagent 隔离 |
+| `test_shared_memory.py` | 公共记忆 append/read，并发写入安全，JSON 结构验证 |
 
 ---
 
@@ -824,6 +900,7 @@ cd backend && PYTHONPATH=. uv run pytest tests/test_client.py -v
 | Phase 5 | Workspace 隔离（LocalBackend + MinIOBackend） | ✅ 完成 |
 | Phase 6 | Skills/MCP 分层加载（最严格原则） | ✅ 完成 |
 | Phase 6.5 | `allowed_subagents` 绑定机制 + 4 个龙虾角色 Agent | ✅ 完成 |
+| Phase 6.8 | Subagent 增强协作：独立工作区 + 会话记忆 + 公共记忆 + aggregate_results 工具 | ✅ 完成 |
 | Phase 7 | Identity Gateway API + 前端多租户 UI | 📋 待开发 |
 | 深度研究 | OpenViking 知识库工作流 + sci-research Skill | 🔄 进行中 |
 | 企业功能 | SSO 集成、审计日志、配额管理 | 📋 待规划 |

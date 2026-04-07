@@ -1,9 +1,13 @@
 import {
+  ActivityIcon,
   CompassIcon,
+  FileCheckIcon,
+  FlaskConicalIcon,
   GraduationCapIcon,
   ImageIcon,
   MicroscopeIcon,
   PenLineIcon,
+  PresentationIcon,
   ShapesIcon,
   SparklesIcon,
   VideoIcon,
@@ -116,25 +120,28 @@ export const enUS: Translations = {
     followupConfirmReplace: "Replace & send",
     suggestions: [
       {
-        suggestion: "Write",
-        prompt: "Write a blog post about the latest trends on [topic]",
-        icon: PenLineIcon,
-      },
-      {
-        suggestion: "Research",
+        suggestion: "Trial Protocol",
         prompt:
-          "Conduct a deep dive research on [topic], and summarize the findings.",
+          "Design a Phase 2b randomised, double-blind, placebo-controlled study protocol for LRRK2-G2019S PD patients: inclusion/exclusion criteria (MDS-UPDRS Part III baseline 20–50), primary endpoint (MDS-UPDRS Part III change at 24 weeks), secondary endpoints (MoCA, NfL biomarkers), randomisation and blinding scheme.",
         icon: MicroscopeIcon,
       },
       {
-        suggestion: "Collect",
-        prompt: "Collect data from [source] and create a report.",
-        icon: ShapesIcon,
+        suggestion: "Stats Plan",
+        prompt:
+          "Develop a Statistical Analysis Plan (SAP) framework for the Phase 2b PD study: primary endpoint analysed by MMRM, α=0.05 two-sided, 80% power — calculate required sample size; include an interim analysis at 50% information fraction using O'Brien-Fleming α-spending. Write key SAP parameters to outputs/sap_summary.md.",
+        icon: ActivityIcon,
       },
       {
-        suggestion: "Learn",
-        prompt: "Learn about [topic] and create a tutorial.",
-        icon: GraduationCapIcon,
+        suggestion: "IND Package",
+        prompt:
+          "Prepare the core IND submission summary package for PD α-syn inhibitor NXT-001:\n1. Run toxicology (rat/dog GLP NOAEL) and pharmacology (human PK prediction via PBPK) in parallel, then adjudicate both to recommend the FIH starting dose;\n2. Run CMC (drug substance specs/stability) and regulatory (IND structure, FDA Pre-IND strategy) in parallel;\n3. Generate integrated report outputs/ind_summary.pdf.",
+        icon: FileCheckIcon,
+      },
+      {
+        suggestion: "Research Deck",
+        prompt:
+          "Generate a 16-slide academic presentation deck for NXT-001 Phase 2b (output: outputs/phase2b_deck.pptx):\nTitle → Disease Background (LRRK2-G2019S PD epidemiology) → Mechanism (α-syn aggregation inhibition) → Preclinical Data (KM curve + forest plot) → Study Design (CONSORT flow) → Statistical Plan (MMRM sample size) → Timeline (IDP Gantt) → Conclusions.",
+        icon: PresentationIcon,
       },
     ],
     suggestionsCreate: [
@@ -152,6 +159,15 @@ export const enUS: Translations = {
         suggestion: "Video",
         prompt: "Create a video about [topic]",
         icon: VideoIcon,
+      },
+      {
+        type: "separator",
+      },
+      {
+        suggestion: "CTD Package",
+        prompt:
+          "Coordinate the clinical team to write CTD Module 2 summary documents in parallel:\n- Biostats team → Clinical Overview (2.5) + Clinical Summary (2.7.3 statistics)\n- Regulatory team → Nonclinical Overview (2.4) + Quality Overview (2.3)\nAfter all tasks complete, use merge strategy to aggregate the four summaries into a full CTD Module 2 integrated report.",
+        icon: FlaskConicalIcon,
       },
       {
         type: "separator",

@@ -1,9 +1,13 @@
 ﻿import {
+  ActivityIcon,
   CompassIcon,
+  FileCheckIcon,
+  FlaskConicalIcon,
   GraduationCapIcon,
   ImageIcon,
   MicroscopeIcon,
   PenLineIcon,
+  PresentationIcon,
   ShapesIcon,
   SparklesIcon,
   VideoIcon,
@@ -111,24 +115,28 @@ export const zhCN: Translations = {
     followupConfirmReplace: "替换并发送",
     suggestions: [
       {
-        suggestion: "写作",
-        prompt: "撰写一篇关于[主题]的博客文章",
-        icon: PenLineIcon,
-      },
-      {
-        suggestion: "研究",
-        prompt: "深入浅出的研究一下[主题]，并总结发现。",
+        suggestion: "临床方案",
+        prompt:
+          "为 LRRK2-G2019S PD 患者设计 Phase 2b 随机双盲安慰剂对照研究方案，包括：入排标准（MDS-UPDRS Part III 基线 20–50）、主终点（MDS-UPDRS Part III 24周变化）、次终点（MoCA、NfL 生物标志物）、随机化方案及盲法设计。",
         icon: MicroscopeIcon,
       },
       {
-        suggestion: "收集",
-        prompt: "从[来源]收集数据并创建报告。",
-        icon: ShapesIcon,
+        suggestion: "数统规划",
+        prompt:
+          "为 Phase 2b PD 研究制定统计分析计划（SAP）框架：主终点选用 MMRM，α=0.05 双侧，power=80%，计算所需样本量；设置 50% 信息量中期分析，采用 O'Brien-Fleming α 消耗函数。完成后将 SAP 核心参数写入 outputs/sap_summary.md。",
+        icon: ActivityIcon,
       },
       {
-        suggestion: "学习",
-        prompt: "学习关于[主题]并创建教程。",
-        icon: GraduationCapIcon,
+        suggestion: "IND 申报",
+        prompt:
+          "准备 PD α-syn 抑制剂（化合物 NXT-001）IND 申报核心摘要包：\n1. 并行分析毒理（大鼠/犬 GLP 重复给药 NOAEL）和 PK（人体 PK 预测，PBPK 模型），完成后用 adjudicate 策略聚合两者，裁决推荐 FIH 起始剂量；\n2. 并行整理 CMC（原料药规格/稳定性）和药政（IND 结构、FDA Pre-IND 策略）；\n3. 最终生成整合报告 outputs/ind_summary.pdf。",
+        icon: FileCheckIcon,
+      },
+      {
+        suggestion: "科研 PPT",
+        prompt:
+          "为 NXT-001 Phase 2b 临床研究生成一份 16 页学术汇报 PPT（输出至 outputs/phase2b_deck.pptx）：\n封面 → 疾病背景（LRRK2-G2019S PD 流行病学）→ 药物机制（α-syn 聚集抑制）→ 临床前数据（KM 曲线 + 森林图）→ 研究设计（CONSORT 流程图）→ 统计方案（MMRM 样本量）→ 时间线（IDP Gantt）→ 结语。",
+        icon: PresentationIcon,
       },
     ],
     suggestionsCreate: [
@@ -146,6 +154,15 @@ export const zhCN: Translations = {
         suggestion: "视频",
         prompt: "生成一个关于[主题]的视频",
         icon: VideoIcon,
+      },
+      {
+        type: "separator",
+      },
+      {
+        suggestion: "CTD 文件包",
+        prompt:
+          "组织临床开发团队并行撰写 CTD Module 2 概要文件：\n- 数统龙虾 → 临床概论（2.5）+ 临床摘要（2.7.3 统计部分）\n- 注册龙虾 → 药理毒理概述（2.4）+ CMC 概述（2.3）\n完成后用 merge 策略聚合四份摘要，生成完整 CTD Module 2 综合报告。",
+        icon: FlaskConicalIcon,
       },
       {
         type: "separator",
