@@ -15,18 +15,35 @@ logger = logging.getLogger(__name__)
 MIN_SUBAGENT_LIMIT = 2
 MAX_SUBAGENT_LIMIT = 4
 
+# Required fields for a well-formed task() tool call
+_TASK_REQUIRED_FIELDS = frozenset({"description", "prompt", "subagent_type"})
+
 
 def _clamp_subagent_limit(value: int) -> int:
     """Clamp subagent limit to valid range [2, 4]."""
     return max(MIN_SUBAGENT_LIMIT, min(MAX_SUBAGENT_LIMIT, value))
 
 
-class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
-    """Truncates excess 'task' tool calls from a single model response.
+def _is_complete_task_call(tc: dict) -> bool:
+    """Return True if a task() tool call has all required non-empty fields."""
+    args = tc.get("args") or {}
+    return all(bool(args.get(f)) for f in _TASK_REQUIRED_FIELDS)
 
-    When an LLM generates more than max_concurrent parallel task tool calls
-    in one response, this middleware keeps only the first max_concurrent and
-    discards the rest. This is more reliable than prompt-based limits.
+
+class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
+    """Validates and limits 'task' tool calls from a single model response.
+
+    Two behaviours are applied in order:
+
+    1. **Drop incomplete calls** — Any ``task`` call whose ``args`` dict is
+       missing or has empty values for ``description``, ``prompt``, or
+       ``subagent_type`` is silently removed before tool execution.  This
+       prevents the "Field required" error from polluting the message chain and
+       avoids a wasted recovery turn.
+
+    2. **Truncate excess calls** — After incomplete calls are removed, if more
+       than ``max_concurrent`` valid ``task`` calls remain, only the first
+       ``max_concurrent`` are kept and the rest are discarded.
 
     Args:
         max_concurrent: Maximum number of concurrent subagent calls allowed.
@@ -37,7 +54,7 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
         super().__init__()
         self.max_concurrent = _clamp_subagent_limit(max_concurrent)
 
-    def _truncate_task_calls(self, state: AgentState) -> dict | None:
+    def _sanitize_task_calls(self, state: AgentState) -> dict | None:
         messages = state.get("messages", [])
         if not messages:
             return None
@@ -50,26 +67,40 @@ class SubagentLimitMiddleware(AgentMiddleware[AgentState]):
         if not tool_calls:
             return None
 
-        # Count task tool calls
         task_indices = [i for i, tc in enumerate(tool_calls) if tc.get("name") == "task"]
-        if len(task_indices) <= self.max_concurrent:
+        if not task_indices:
             return None
 
-        # Build set of indices to drop (excess task calls beyond the limit)
-        indices_to_drop = set(task_indices[self.max_concurrent :])
-        truncated_tool_calls = [tc for i, tc in enumerate(tool_calls) if i not in indices_to_drop]
+        # Step 1: identify incomplete task calls
+        incomplete = {i for i in task_indices if not _is_complete_task_call(tool_calls[i])}
+        if incomplete:
+            logger.warning(
+                "Dropping %d task call(s) with missing required fields (description/prompt/subagent_type)",
+                len(incomplete),
+            )
 
-        dropped_count = len(indices_to_drop)
-        logger.warning(f"Truncated {dropped_count} excess task tool call(s) from model response (limit: {self.max_concurrent})")
+        # Step 2: from the remaining valid calls, apply the concurrency cap
+        valid_task_indices = [i for i in task_indices if i not in incomplete]
+        excess = set(valid_task_indices[self.max_concurrent :])
+        if excess:
+            logger.warning(
+                "Truncated %d excess task tool call(s) from model response (limit: %d)",
+                len(excess),
+                self.max_concurrent,
+            )
 
-        # Replace the AIMessage with truncated tool_calls (same id triggers replacement)
-        updated_msg = last_msg.model_copy(update={"tool_calls": truncated_tool_calls})
+        indices_to_drop = incomplete | excess
+        if not indices_to_drop:
+            return None
+
+        truncated = [tc for i, tc in enumerate(tool_calls) if i not in indices_to_drop]
+        updated_msg = last_msg.model_copy(update={"tool_calls": truncated})
         return {"messages": [updated_msg]}
 
     @override
     def after_model(self, state: AgentState, runtime: Runtime) -> dict | None:
-        return self._truncate_task_calls(state)
+        return self._sanitize_task_calls(state)
 
     @override
     async def aafter_model(self, state: AgentState, runtime: Runtime) -> dict | None:
-        return self._truncate_task_calls(state)
+        return self._sanitize_task_calls(state)

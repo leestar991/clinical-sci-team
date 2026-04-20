@@ -15,17 +15,6 @@ SOUL_FILENAME = "SOUL.md"
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
 
-def validate_agent_name(name: str | None) -> str | None:
-    """Validate a custom agent name before using it in filesystem paths."""
-    if name is None:
-        return None
-    if not isinstance(name, str):
-        raise ValueError("Invalid agent name. Expected a string or None.")
-    if not AGENT_NAME_PATTERN.fullmatch(name):
-        raise ValueError(f"Invalid agent name '{name}'. Must match pattern: {AGENT_NAME_PATTERN.pattern}")
-    return name
-
-
 class AgentConfig(BaseModel):
     """Configuration for a custom agent."""
 
@@ -38,6 +27,10 @@ class AgentConfig(BaseModel):
     # - [] (explicit empty list): disable all skills
     # - ["skill1", "skill2"]: load only the specified skills
     skills: list[str] | None = None
+    # allowed_subagents restricts which subagent types this agent may delegate to.
+    # - None (or omitted): no restriction, all builtins are accessible
+    # - ["subagent-a", "subagent-b"]: only these subagent types are allowed
+    allowed_subagents: list[str] | None = None
 
 
 def load_agent_config(name: str | None) -> AgentConfig | None:
@@ -57,7 +50,8 @@ def load_agent_config(name: str | None) -> AgentConfig | None:
     if name is None:
         return None
 
-    name = validate_agent_name(name)
+    if not AGENT_NAME_PATTERN.match(name):
+        raise ValueError(f"Invalid agent name '{name}'. Must match pattern: {AGENT_NAME_PATTERN.pattern}")
     agent_dir = get_paths().agent_dir(name)
     config_file = agent_dir / "config.yaml"
 

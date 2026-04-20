@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import replace
 from typing import Annotated
@@ -17,6 +18,9 @@ from deerflow.subagents import SubagentExecutor, get_available_subagent_names, g
 from deerflow.subagents.executor import SubagentStatus, cleanup_background_task, get_background_task_result, request_cancel_background_task
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of automatic retries when a subagent task fails (not times-out).
+SUBAGENT_MAX_RETRIES = 1
 
 
 @tool("task", parse_docstring=True)
@@ -66,6 +70,17 @@ async def task_tool(
     if config is None:
         available = ", ".join(available_subagent_names)
         return f"Error: Unknown subagent type '{subagent_type}'. Available: {available}"
+
+    # Enforce allowed_subagents if this agent has a restricted list
+    if runtime is not None:
+        metadata = runtime.config.get("metadata", {})
+        allowed_subagents = metadata.get("allowed_subagents")
+        if allowed_subagents is not None and subagent_type not in allowed_subagents:
+            return (
+                f"Error: Subagent '{subagent_type}' is not available for this agent. "
+                f"Allowed subagents: {', '.join(allowed_subagents)}"
+            )
+
     if subagent_type == "bash" and not is_host_bash_allowed():
         return f"Error: {LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE}"
 
@@ -133,10 +148,13 @@ async def task_tool(
     poll_count = 0
     last_status = None
     last_message_count = 0  # Track how many AI messages we've already sent
-    # Polling timeout: execution timeout + 60s buffer, checked every 5s
-    max_poll_count = (config.timeout_seconds + 60) // 5
+    # Wall-clock deadline: execution timeout + 120s buffer (avoids counting drift
+    # under a loaded event loop that was previously caused by using poll_count).
+    poll_deadline = time.monotonic() + config.timeout_seconds + 120
+    retries_left = SUBAGENT_MAX_RETRIES
+    attempt = 0  # 0-based attempt index, used to build unique task_ids on retry
 
-    logger.info(f"[trace={trace_id}] Started background task {task_id} (subagent={subagent_type}, timeout={config.timeout_seconds}s, polling_limit={max_poll_count} polls)")
+    logger.info(f"[trace={trace_id}] Started background task {task_id} (subagent={subagent_type}, timeout={config.timeout_seconds}s, deadline_buffer=120s)")
 
     writer = get_stream_writer()
     # Send Task Started message'
@@ -182,9 +200,35 @@ async def task_tool(
                 cleanup_background_task(task_id)
                 return f"Task Succeeded. Result: {result.result}"
             elif result.status == SubagentStatus.FAILED:
-                writer({"type": "task_failed", "task_id": task_id, "error": result.error})
-                logger.error(f"[trace={trace_id}] Task {task_id} failed: {result.error}")
                 cleanup_background_task(task_id)
+                if retries_left > 0:
+                    attempt += 1
+                    retries_left -= 1
+                    new_task_id = f"{tool_call_id}-retry{attempt}"
+                    logger.warning(
+                        f"[trace={trace_id}] Task {task_id} failed, retrying as {new_task_id} ({retries_left} retries left). Error: {result.error}"
+                    )
+                    writer({"type": "task_failed", "task_id": task_id, "error": result.error, "retrying": True})
+                    # Reset execution state for the retry
+                    task_id = new_task_id
+                    executor = SubagentExecutor(
+                        config=config,
+                        tools=tools,
+                        parent_model=parent_model,
+                        sandbox_state=sandbox_state,
+                        thread_data=thread_data,
+                        thread_id=thread_id,
+                        trace_id=trace_id,
+                    )
+                    task_id = executor.execute_async(prompt, task_id=task_id)
+                    poll_count = 0
+                    last_status = None
+                    last_message_count = 0
+                    poll_deadline = time.monotonic() + config.timeout_seconds + 120
+                    writer({"type": "task_started", "task_id": task_id, "description": description})
+                    continue
+                writer({"type": "task_failed", "task_id": task_id, "error": result.error})
+                logger.error(f"[trace={trace_id}] Task {task_id} failed (no retries left): {result.error}")
                 return f"Task failed. Error: {result.error}"
             elif result.status == SubagentStatus.CANCELLED:
                 writer({"type": "task_cancelled", "task_id": task_id, "error": result.error})
@@ -201,15 +245,10 @@ async def task_tool(
             await asyncio.sleep(5)
             poll_count += 1
 
-            # Polling timeout as a safety net (in case thread pool timeout doesn't work)
-            # Set to execution timeout + 60s buffer, in 5s poll intervals
-            # This catches edge cases where the background task gets stuck
-            # Note: We don't call cleanup_background_task here because the task may
-            # still be running in the background. The cleanup will happen when the
-            # executor completes and sets a terminal status.
-            if poll_count > max_poll_count:
+            # Wall-clock polling guard (safety net in case thread-pool timeout doesn't fire).
+            if time.monotonic() > poll_deadline:
                 timeout_minutes = config.timeout_seconds // 60
-                logger.error(f"[trace={trace_id}] Task {task_id} polling timed out after {poll_count} polls (should have been caught by thread pool timeout)")
+                logger.error(f"[trace={trace_id}] Task {task_id} polling deadline exceeded after {poll_count} polls (should have been caught by thread pool timeout)")
                 writer({"type": "task_timed_out", "task_id": task_id})
                 return f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
     except asyncio.CancelledError:
@@ -220,7 +259,7 @@ async def task_tool(
         request_cancel_background_task(task_id)
 
         async def cleanup_when_done() -> None:
-            max_cleanup_polls = max_poll_count
+            cleanup_deadline = time.monotonic() + config.timeout_seconds + 120
             cleanup_poll_count = 0
 
             while True:
@@ -232,7 +271,7 @@ async def task_tool(
                     cleanup_background_task(task_id)
                     return
 
-                if cleanup_poll_count > max_cleanup_polls:
+                if time.monotonic() > cleanup_deadline:
                     logger.warning(f"[trace={trace_id}] Deferred cleanup for task {task_id} timed out after {cleanup_poll_count} polls")
                     return
 

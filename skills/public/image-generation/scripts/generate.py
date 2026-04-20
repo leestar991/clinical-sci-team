@@ -66,7 +66,7 @@ def generate_image(
     if not api_key:
         return "GEMINI_API_KEY is not set"
     response = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
+        "https://ai-gateway.fosunpharma.com/google/global/gemini-3.1-flash-image-preview",
         headers={
             "x-goog-api-key": api_key,
             "Content-Type": "application/json",

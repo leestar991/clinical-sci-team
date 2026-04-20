@@ -253,6 +253,7 @@ Proxied through nginx: `/api/langgraph/*` → LangGraph, all other `/api/*` → 
 **Concurrency**: `MAX_CONCURRENT_SUBAGENTS = 3` enforced by `SubagentLimitMiddleware` (truncates excess tool calls in `after_model`), 15-minute timeout
 **Flow**: `task()` tool → `SubagentExecutor` → background thread → poll 5s → SSE events → result
 **Events**: `task_started`, `task_running`, `task_completed`/`task_failed`/`task_timed_out`
+**Prompt alignment**: Custom agent prompt files under `backend/.deer-flow/agents/<agent>/SOUL.md` must stay aligned with that agent's `config.yaml` `allowed_subagents`. The biostats prompt now reflects the current 7 enabled subagents, exposes a visible multi-subagent collaboration section, caps each batch at 3 parallel `task()` calls, and routes `report-writer` / `sci-ppt-generator` to synthesis-only stages.
 
 ### Tool System (`packages/harness/deerflow/tools/`)
 

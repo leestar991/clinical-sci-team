@@ -6,7 +6,6 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.types import Command
 
-from deerflow.config.agents_config import validate_agent_name
 from deerflow.config.paths import get_paths
 
 logger = logging.getLogger(__name__)
@@ -30,7 +29,6 @@ def setup_agent(
     is_new_dir = False
 
     try:
-        agent_name = validate_agent_name(agent_name)
         paths = get_paths()
         agent_dir = paths.agent_dir(agent_name) if agent_name else paths.base_dir
         is_new_dir = not agent_dir.exists()

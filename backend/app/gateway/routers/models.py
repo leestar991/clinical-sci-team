@@ -17,17 +17,10 @@ class ModelResponse(BaseModel):
     supports_reasoning_effort: bool = Field(default=False, description="Whether model supports reasoning effort")
 
 
-class TokenUsageResponse(BaseModel):
-    """Token usage display configuration."""
-
-    enabled: bool = Field(default=False, description="Whether token usage display is enabled")
-
-
 class ModelsListResponse(BaseModel):
     """Response model for listing all models."""
 
     models: list[ModelResponse]
-    token_usage: TokenUsageResponse
 
 
 @router.get(
@@ -43,7 +36,7 @@ async def list_models() -> ModelsListResponse:
     excluding sensitive fields like API keys and internal configuration.
 
     Returns:
-        A list of all configured models with their metadata and token usage display settings.
+        A list of all configured models with their metadata.
 
     Example Response:
         ```json
@@ -51,24 +44,17 @@ async def list_models() -> ModelsListResponse:
             "models": [
                 {
                     "name": "gpt-4",
-                    "model": "gpt-4",
                     "display_name": "GPT-4",
                     "description": "OpenAI GPT-4 model",
-                    "supports_thinking": false,
-                    "supports_reasoning_effort": false
+                    "supports_thinking": false
                 },
                 {
                     "name": "claude-3-opus",
-                    "model": "claude-3-opus",
                     "display_name": "Claude 3 Opus",
                     "description": "Anthropic Claude 3 Opus model",
-                    "supports_thinking": true,
-                    "supports_reasoning_effort": false
+                    "supports_thinking": true
                 }
-            ],
-            "token_usage": {
-                "enabled": true
-            }
+            ]
         }
         ```
     """
@@ -84,10 +70,7 @@ async def list_models() -> ModelsListResponse:
         )
         for model in config.models
     ]
-    return ModelsListResponse(
-        models=models,
-        token_usage=TokenUsageResponse(enabled=config.token_usage.enabled),
-    )
+    return ModelsListResponse(models=models)
 
 
 @router.get(

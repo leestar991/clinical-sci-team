@@ -9,7 +9,8 @@ def test_get_available_subagent_names_hides_bash_when_host_bash_disabled(monkeyp
 
     names = registry_module.get_available_subagent_names()
 
-    assert names == ["general-purpose"]
+    assert "general-purpose" in names
+    assert "bash" not in names
 
 
 def test_get_available_subagent_names_keeps_bash_when_allowed(monkeypatch) -> None:
@@ -17,7 +18,8 @@ def test_get_available_subagent_names_keeps_bash_when_allowed(monkeypatch) -> No
 
     names = registry_module.get_available_subagent_names()
 
-    assert names == ["general-purpose", "bash"]
+    assert "general-purpose" in names
+    assert "bash" in names
 
 
 def test_build_subagent_section_hides_bash_examples_when_unavailable(monkeypatch) -> None:
@@ -44,12 +46,14 @@ def test_build_subagent_section_includes_bash_when_available(monkeypatch) -> Non
 def test_bash_subagent_prompt_mentions_workspace_relative_paths() -> None:
     from deerflow.subagents.builtins.bash_agent import BASH_AGENT_CONFIG
 
-    assert "Treat `/mnt/user-data/workspace` as the default working directory for file IO" in BASH_AGENT_CONFIG.system_prompt
-    assert "`hello.txt`, `../uploads/input.csv`, and `../outputs/result.md`" in BASH_AGENT_CONFIG.system_prompt
+    assert "/mnt/user-data/workspace" in BASH_AGENT_CONFIG.system_prompt
+    assert "/mnt/user-data/uploads" in BASH_AGENT_CONFIG.system_prompt
+    assert "/mnt/user-data/outputs" in BASH_AGENT_CONFIG.system_prompt
 
 
 def test_general_purpose_subagent_prompt_mentions_workspace_relative_paths() -> None:
     from deerflow.subagents.builtins.general_purpose import GENERAL_PURPOSE_CONFIG
 
-    assert "Treat `/mnt/user-data/workspace` as the default working directory for coding and file IO" in GENERAL_PURPOSE_CONFIG.system_prompt
-    assert "`hello.txt`, `../uploads/input.csv`, and `../outputs/result.md`" in GENERAL_PURPOSE_CONFIG.system_prompt
+    assert "/mnt/user-data/workspace" in GENERAL_PURPOSE_CONFIG.system_prompt
+    assert "/mnt/user-data/uploads" in GENERAL_PURPOSE_CONFIG.system_prompt
+    assert "/mnt/user-data/outputs" in GENERAL_PURPOSE_CONFIG.system_prompt

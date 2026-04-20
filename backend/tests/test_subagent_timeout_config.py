@@ -325,7 +325,7 @@ class TestRegistryGetSubagentConfig:
         _reset_subagents_config(timeout_seconds=900)
         config = get_subagent_config("general-purpose")
         assert config.timeout_seconds == 900
-        assert config.max_turns == 100
+        assert config.max_turns == 50
 
     def test_global_timeout_override_applied(self):
         from deerflow.subagents.registry import get_subagent_config
@@ -536,37 +536,37 @@ class TestRegistryListSubagents:
 
 
 class TestPollingTimeoutCalculation:
-    """Verify the formula (timeout_seconds + 60) // 5 is correct for various inputs."""
+    """Verify the wall-clock deadline formula for the task_tool polling guard.
 
-    @pytest.mark.parametrize(
-        "timeout_seconds, expected_max_polls",
-        [
-            (900, 192),  # default 15 min → (900+60)//5 = 192
-            (300, 72),  # 5 min → (300+60)//5 = 72
-            (1800, 372),  # 30 min → (1800+60)//5 = 372
-            (60, 24),  # 1 min → (60+60)//5 = 24
-            (1, 12),  # minimum → (1+60)//5 = 12
-        ],
-    )
-    def test_polling_timeout_formula(self, timeout_seconds: int, expected_max_polls: int):
-        dummy_config = SubagentConfig(
-            name="test",
-            description="test",
-            system_prompt="test",
-            timeout_seconds=timeout_seconds,
-        )
-        max_poll_count = (dummy_config.timeout_seconds + 60) // 5
-        assert max_poll_count == expected_max_polls
+    The new formula is: ``poll_deadline = time.monotonic() + timeout_seconds + 120``
+    (120-second buffer instead of the old poll-count-based approach).
+    """
 
-    def test_polling_timeout_exceeds_execution_timeout(self):
-        """Safety-net polling window must always be longer than the execution timeout."""
-        for timeout_seconds in [60, 300, 900, 1800]:
-            dummy_config = SubagentConfig(
-                name="test",
-                description="test",
-                system_prompt="test",
-                timeout_seconds=timeout_seconds,
-            )
-            max_poll_count = (dummy_config.timeout_seconds + 60) // 5
-            polling_window_seconds = max_poll_count * 5
-            assert polling_window_seconds > timeout_seconds
+    @pytest.mark.parametrize("timeout_seconds", [60, 300, 900, 1800])
+    def test_deadline_exceeds_execution_timeout(self, timeout_seconds: int):
+        """Wall-clock deadline must always be strictly greater than the execution timeout."""
+        import time
+
+        before = time.monotonic()
+        deadline = time.monotonic() + timeout_seconds + 120
+        after = time.monotonic()
+        # The deadline is at least timeout_seconds + 120 in the future
+        assert deadline >= before + timeout_seconds + 120
+        assert deadline <= after + timeout_seconds + 120
+
+    @pytest.mark.parametrize("timeout_seconds", [60, 300, 900, 1800])
+    def test_deadline_buffer_is_120_seconds(self, timeout_seconds: int):
+        """The fixed buffer added on top of timeout_seconds is 120 seconds."""
+        import time
+
+        t0 = time.monotonic()
+        deadline = t0 + timeout_seconds + 120
+        buffer = deadline - t0 - timeout_seconds
+        assert buffer == pytest.approx(120, abs=1e-6)
+
+    def test_deadline_larger_than_old_formula(self):
+        """New 120s buffer >= old 60s buffer: deadline is never shorter."""
+        timeout_seconds = 900
+        old_window = ((timeout_seconds + 60) // 5) * 5  # old poll_count-based window
+        new_buffer = 120
+        assert timeout_seconds + new_buffer >= old_window

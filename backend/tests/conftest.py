@@ -6,6 +6,7 @@ issues when unit-testing lightweight config/registry code in isolation.
 
 import importlib.util
 import sys
+from enum import Enum
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -27,10 +28,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 # By injecting a mock for deerflow.subagents.executor *before* any test module
 # triggers the import, __init__.py's "from .executor import ..." succeeds
 # immediately without running the real executor module.
+
+
+class SubagentStatus(str, Enum):
+    """Enum mirror of the real SubagentStatus used by conftest to break circular imports."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
+
+
 _executor_mock = MagicMock()
 _executor_mock.SubagentExecutor = MagicMock
 _executor_mock.SubagentResult = MagicMock
-_executor_mock.SubagentStatus = MagicMock
+_executor_mock.SubagentStatus = SubagentStatus
 _executor_mock.MAX_CONCURRENT_SUBAGENTS = 3
 _executor_mock.get_background_task_result = MagicMock()
 
