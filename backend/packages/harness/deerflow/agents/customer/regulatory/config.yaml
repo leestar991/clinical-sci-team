@@ -1,0 +1,17 @@
+name: regulatory
+description: 注册专家 — 药政法规、CMC化学制造、药理毒理与监管申报文件撰写。
+model: claude-sonnet-4-6
+tool_groups:
+  - web
+  - file:read
+  - file:write
+  - bash
+allowed_subagents:
+  - drug-registration
+  - pharmacology
+  - toxicology
+  - chemistry
+  - literature-analyzer
+  - data-extractor
+  - report-writer
+  - sci-ppt-generator
