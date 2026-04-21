@@ -1,0 +1,15 @@
+name: clinical-medicine
+description: 临床医学专家 — 临床试验设计、疾病领域专家、研究方案与医学文件撰写。
+model: gpt-5.4
+tool_groups:
+  - web
+  - file:read
+  - file:write
+  - bash
+allowed_subagents:
+  - parkinson-clinical
+  - trial-design
+  - literature-analyzer
+  - data-extractor
+  - report-writer
+  - sci-ppt-generator
