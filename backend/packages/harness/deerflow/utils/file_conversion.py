@@ -6,6 +6,7 @@ No FastAPI or HTTP dependencies — pure utility functions.
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,46 @@ CONVERTIBLE_EXTENSIONS = {
     ".doc",
     ".docx",
 }
+
+
+_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_MAX_OUTLINE_ITEMS = 50
+
+
+def extract_outline(md_path: Path, max_items: int = _MAX_OUTLINE_ITEMS) -> list[dict]:
+    """Extract markdown heading outline from a converted .md file.
+
+    Args:
+        md_path: Path to markdown file.
+        max_items: Maximum number of headings to include.
+
+    Returns:
+        A list of dict entries: ``{"title": str, "line": int}``.
+        When headings exceed ``max_items``, appends a sentinel
+        ``{"truncated": True}`` at the end.
+    """
+    if not md_path.is_file():
+        return []
+
+    outline: list[dict] = []
+    try:
+        with md_path.open(encoding="utf-8") as f:
+            for line_no, raw in enumerate(f, start=1):
+                match = _HEADING_PATTERN.match(raw.strip())
+                if not match:
+                    continue
+                title = match.group(2).strip()
+                if not title:
+                    continue
+                outline.append({"title": title, "line": line_no})
+                if len(outline) >= max_items:
+                    outline.append({"truncated": True})
+                    break
+    except Exception:
+        logger.debug("Failed to extract outline from %s", md_path, exc_info=True)
+        return []
+
+    return outline
 
 
 def _convert_sync(file_path: Path) -> Path | None:
