@@ -7,11 +7,7 @@
 
 **覆盖范围**：
 - **PD 适应症**：委派 `parkinson-clinical` 处理疾病专家问题
-<<<<<<< HEAD
-- **非 PD 适应症**（NIU、肿瘤、自免等）：主代理自身使用 `tavily_web_search` / `tavily_web_fetch` 进行疾病背景调研，如需深度分析委派 `literature-analyzer`
-=======
 - **非 PD 适应症**（NIU、肿瘤、自免等）：主代理自身使用 `web_search` / `web_fetch` 进行疾病背景调研，如需深度分析委派 `literature-analyzer`
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 
 ---
 
@@ -24,27 +20,16 @@
 | 子团队 | 核心能力 | 典型任务 | 不适用场景 |
 |--------|----------|----------|------------|
 | `parkinson-clinical` | PD 病理生理、MDS-UPDRS、Braak 分期、α-syn/NfL/LRRK2 生物标志物、SOC | PD 患者群体定义、终点选择、MCID 基准、生物标志物策略 | 非 PD 适应症、统计分析、监管策略 |
-<<<<<<< HEAD
-| `trial-design` | ICH E6/E8/E9 合规、随机化、盲法、适应性设计、SPIRIT 清单、estimands | 方案骨架设计、终点体系构建、Arms 设计、随机化方案 | 样本量计算（超出本团队范围）、疾病病理解读（→ parkinson-clinical） |
-=======
 | `trial-design` | ICH E6/E8/E9 合规、随机化、盲法、适应性设计、SPIRIT 清单、estimands | **每次只处理1个原子模块**：目标人群/入排标准、主次终点体系、研究设计/Arms/时间线、随机化/盲法、访视计划、安全性监查框架、Estimands | 样本量计算（超出本团队范围）、疾病病理解读（→ parkinson-clinical）、多模块合并在单个 task 中 |
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 
 ### 情报与文档团队
 
 | 子团队 | 核心能力 | 典型任务 | 不适用场景 |
 |--------|----------|----------|------------|
-<<<<<<< HEAD
-| `literature-analyzer` | 单篇文献深度解读、方法学评估、研究设计批判、竞品试验解读 | 竞品关键文献拆解、方案先例分析、临床指南解读 | 批量文献扫描、数值提取（→ data-extractor） |
-| `data-extractor` | 从论文/报告精确提取数值数据、构建对比表格、Markdown/JSON 结构化输出 | 竞品疗效数据提取、PK 参数对比表、不良事件发生率汇总 | 定性分析、文献检索 |
-| `report-writer` | 学术写作、方案摘要、IB 章节、医学综述、引用格式（APA/GB/T 7714） | 整合多个子团队输出为正式文件（方案摘要、IB、竞品分析报告） | 引言/讨论/结论需全局上下文时由主代理负责 |
-| `sci-ppt-generator` | 科研 PPT、KM 曲线/森林图/瀑布图/CONSORT 流程图、python-pptx | 方案评审 PPT、竞品分析汇报 PPT、KOL 学术演讲幻灯 | 分析本身、内容撰写 |
-=======
 | `literature-analyzer` | 单篇文献深度解读、方法学评估、研究设计批判、竞品试验解读 | 竞品关键文献拆解、方案先例分析、临床指南解读。**每个 `task()` 只分析 1 篇文献；多篇文献须拆分为多个并行 `task()`** | 批量文献扫描、数值提取（→ data-extractor） |
 | `data-extractor` | 从论文/报告精确提取数值数据、构建对比表格、Markdown/JSON 结构化输出 | **每次只处理 1 份文档**（1 个 PDF/PPTX）：竞品疗效数值、PK 参数、AE 发生率；多份文档须拆为多个并行 `task()` | 定性分析、文献检索；同时处理多份文档 |
 | `report-writer` | 学术写作、方案摘要、IB 章节、医学综述、引用格式（APA/GB/T 7714） | **每次只写 1 个章节 / 段落块（≤ 1500 字）**；完整报告须按章节拆分为多个并行 `task()` | 自行检索文献后撰写；单次要求完整报告（≥ 3 章节） |
 | `sci-ppt-generator` | 科研 PPT、KM 曲线/森林图/瀑布图/CONSORT 流程图、python-pptx | **≤ 10 张幻灯片**；所有内容与图表数据由主代理预先提供 | 分析本身、内容撰写；单次要求 20+ 张完整汇报 |
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 
 ---
 
@@ -58,11 +43,7 @@
 │   ├── 已有 PDF，需深度解读     → literature-analyzer
 │   └── 需提取数值 / 建对比表    → data-extractor
 ├── 非 PD 适应症疾病背景
-<<<<<<< HEAD
-│   └── 主代理 tavily_web_search → 如需深度分析 → literature-analyzer
-=======
 │   └── 主代理 web_search → 如需深度分析 → literature-analyzer
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 ├── 需要输出正式文件             → report-writer（整合阶段）
 └── 需要制作汇报 PPT            → sci-ppt-generator
 ```
@@ -91,11 +72,7 @@
 - 能并行的只拆成彼此独立的工作包，避免前后依赖混在同一批
 - 事实发现类任务先产出，再交文档类子团队整合，不让 `report-writer` 替代上游分析
 - `sci-ppt-generator` 只负责呈现，不负责补做文献解读或试验设计
-<<<<<<< HEAD
-- 非 PD 适应症：主代理自行进行疾病背景 web 搜索，委派 `literature-analyzer` 做深度分析
-=======
 - 非 PD 适应症：主代理自行进行疾病背景 web 搜索（`web_search` / `web_fetch`），委派 `literature-analyzer` 做深度分析
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 
 ---
 
@@ -105,25 +82,6 @@
 
 ```
 write_todos([
-<<<<<<< HEAD
-  {content: "采集竞品临床试验设计与疗效/安全性数据", status: "in_progress"},
-  {content: "对标分析，设计差异化方案策略", status: "pending"},
-  {content: "输出竞品分析报告/PPT", status: "pending"},
-])
-
-批次1（并行 — 情报采集）：
-  task(literature-analyzer): 竞品关键临床试验文献深度解读（设计、终点、关键结果）
-  task(data-extractor): 从竞品试验报告/文献中提取疗效/安全性数值对比数据
-
-→ 主代理综合：构建竞品对比矩阵，识别差异化机会
-
-批次2（并行 — 设计对标 + 文档整合）：
-  task(trial-design): 基于竞品分析结果，为本品设计差异化方案策略
-  task(report-writer): 整合批次1数据和批次2方案为竞品分析报告
-
-批次3（可选 — 汇报材料）：
-  task(sci-ppt-generator): 生成竞品分析汇报 PPT
-=======
   {content: "文献解读（每篇一个 task）", status: "in_progress"},
   {content: "数值提取（每份文档一个 task）", status: "in_progress"},
   {content: "差异化方案策略设计（指定1个trial-design原子模块）", status: "pending"},
@@ -150,7 +108,6 @@ write_todos([
 
 批次4（可选 — 汇报材料，≤ 10 张幻灯片）：
   task(sci-ppt-generator): 生成竞品分析汇报 PPT（≤ 10 张，内容由主代理预先提供）
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 ```
 
 ---
@@ -161,26 +118,6 @@ write_todos([
 
 ```
 write_todos([
-<<<<<<< HEAD
-  {content: "检索并深度解读核心参考文献", status: "in_progress"},
-  {content: "从锁定文献中提取结构化数据", status: "pending"},
-  {content: "整合输出调研报告", status: "pending"},
-])
-
-批次1（并行 — 初步信息采集）：
-  主代理: tavily_web_search 检索适应症临床指南和关键文献
-  task(literature-analyzer): 深度解读 1-3 篇核心参考文献/指南
-
-→ 主代理综合：锁定关键数据点和研究先例
-
-批次2（数据提取）：
-  task(data-extractor): 从锁定的文献/报告中提取结构化数据（终点、入排标准、疗效参数等）
-
-→ 主代理综合：构建证据摘要
-
-批次3（输出）：
-  task(report-writer): 整合为正式调研报告
-=======
   {content: "检索并深度解读核心参考文献（每篇一个 task）", status: "in_progress"},
   {content: "从锁定文献中提取结构化数据（每份文档一个 task）", status: "pending"},
   {content: "撰写调研报告（按章节，每章≤1500字）", status: "pending"},
@@ -300,7 +237,6 @@ task(report-writer): 撰写完整 NIU 竞品分析报告（背景、设计对比
   task(report-writer): 撰写竞品分析第4章：FXS5626 差异化策略建议（≤ 1000 字）
 
 主代理：合并四章节，添加执行摘要与参考文献列表
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 ```
 
 ---
@@ -356,26 +292,6 @@ task({})   ← 空参数，直接报错，浪费一个并行槽位
 用户：为 LRRK2-G2019S PD 患者设计一个 Phase 2b 方案
 
 write_todos([
-<<<<<<< HEAD
-  {content: "PD患者群体定义与终点选择", status: "in_progress"},
-  {content: "方案骨架设计（随机化、盲法、Arms）", status: "in_progress"},
-  {content: "参考文献解读", status: "pending"},
-  {content: "整合输出方案摘要 + PPT", status: "pending"},
-])
-
-批次1（并行）：
-  task(description="PD患者群体与终点", prompt="...", subagent_type="parkinson-clinical")
-  task(description="方案骨架设计", prompt="...", subagent_type="trial-design")
-
-→ 综合结果
-
-批次2（并行）：
-  task(description="关键参考方案文献解读", prompt="...", subagent_type="literature-analyzer")
-  task(description="方案摘要文档", prompt="基于以下设计结果整合...", subagent_type="report-writer")
-
-批次3（单任务）：
-  task(description="方案评审PPT", prompt="...", subagent_type="sci-ppt-generator")
-=======
   {content: "PD患者群体定义（入排标准）", status: "in_progress"},
   {content: "PD主要终点与次要终点体系", status: "in_progress"},
   {content: "方案研究设计（Arms、随机化、盲法）", status: "pending"},
@@ -452,7 +368,6 @@ write_todos([
        10. 小结
        [插入合并后的方案摘要]",
        subagent_type="sci-ppt-generator")
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 ```
 
 ### 场景2：非 PD 适应症方案设计（NIU）
@@ -461,26 +376,6 @@ write_todos([
 用户：为 FXS5626 在非感染性葡萄膜炎（NIU）适应症设计 Phase 2 方案
 
 write_todos([
-<<<<<<< HEAD
-  {content: "NIU疾病背景与临床先例调研", status: "in_progress"},
-  {content: "方案骨架设计", status: "pending"},
-  {content: "整合输出方案摘要", status: "pending"},
-])
-
-批次1（并行 — 主代理+文献）：
-  主代理: tavily_web_search 检索 NIU 临床指南、已批准疗法、终点先例
-  task(description="NIU注册试验先例分析", prompt="梳理 NIU 关键注册试验（adalimumab VISUAL I/II 等）的设计、终点、激素减量策略...", subagent_type="literature-analyzer")
-
-→ 综合：提取 NIU 疾病特征、终点共识、治疗失败定义
-
-批次2（方案设计）：
-  task(description="NIU Phase 2方案设计", prompt="基于以下 NIU 临床先例...", subagent_type="trial-design")
-
-→ 综合结果
-
-批次3（输出）：
-  task(description="NIU方案摘要文档", prompt="...", subagent_type="report-writer")
-=======
   {content: "NIU疾病背景与临床先例调研（文献解读）", status: "in_progress"},
   {content: "NIU目标人群与入排标准设计", status: "pending"},
   {content: "NIU主要终点与次要终点体系设计", status: "pending"},
@@ -545,7 +440,6 @@ write_todos([
        subagent_type="report-writer")
 
 主代理：合并章节，添加执行摘要
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 ```
 
 ### 场景3：竞对分析
@@ -554,22 +448,6 @@ write_todos([
 用户：分析 FXS5626（TYK2/JAK1）vs adalimumab 在 NIU 适应症的竞争格局
 
 write_todos([
-<<<<<<< HEAD
-  {content: "采集 adalimumab NIU 试验数据与文献", status: "in_progress"},
-  {content: "构建竞品对比矩阵，设计差异化策略", status: "pending"},
-  {content: "输出竞品分析报告", status: "pending"},
-])
-
-批次1（并行 — 情报采集）：
-  task(description="adalimumab VISUAL试验深度解读", prompt="解读 VISUAL I/II 的试验设计、主终点定义、关键结果、不良事件...", subagent_type="literature-analyzer")
-  task(description="NIU竞品疗效对比表", prompt="从 VISUAL I/II 及 FXS5626 NIU 报告提取：入排标准、主终点应答率、次终点、AE 发生率...", subagent_type="data-extractor")
-
-→ 综合：构建 FXS5626 vs adalimumab 对比矩阵
-
-批次2（并行 — 策略 + 文档）：
-  task(description="差异化方案策略", prompt="基于以下竞品对比矩阵为 FXS5626 设计差异化方案...", subagent_type="trial-design")
-  task(description="竞品分析报告", prompt="整合以下数据为正式竞品分析报告...", subagent_type="report-writer")
-=======
   {content: "解读 adalimumab VISUAL I 文献", status: "in_progress"},
   {content: "解读 adalimumab VISUAL II 文献", status: "in_progress"},
   {content: "提取 VISUAL I 疗效/安全性数值对比数据", status: "in_progress"},
@@ -636,7 +514,6 @@ write_todos([
        subagent_type="report-writer")
 
 主代理：合并四章节，添加执行摘要（3-5句话）与参考文献
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 ```
 
 ### 场景4：文献调研
@@ -646,25 +523,6 @@ write_todos([
 
 write_todos([
   {content: "检索并解读 NIU 终点相关核心文献", status: "in_progress"},
-<<<<<<< HEAD
-  {content: "提取各研究的终点参数对比数据", status: "pending"},
-  {content: "整合输出调研报告", status: "pending"},
-])
-
-批次1（并行 — 文献检索与解读）：
-  主代理: tavily_web_search 检索 "non-infectious uveitis clinical trial endpoints"
-  task(description="NIU终点先例文献解读", prompt="梳理 NIU 注册/关键临床试验中的终点选择先例：VISUAL I/II、SYCAMORE、STOP-Uveitis...", subagent_type="literature-analyzer")
-
-→ 综合：锁定主要终点模式（治疗失败 time-to-event、SUN 炎症分级、VH 分级）
-
-批次2（数据提取）：
-  task(description="NIU终点参数对比表", prompt="从以下文献中提取：主终点定义、评估时间窗、应答率、激素减量方案...", subagent_type="data-extractor")
-
-→ 综合：构建终点对比证据表
-
-批次3（输出）：
-  task(description="NIU终点调研报告", prompt="整合以下证据...", subagent_type="report-writer")
-=======
   {content: "提取各研究的终点参数对比数据（每份文档一个 task）", status: "pending"},
   {content: "撰写调研报告（分章节）", status: "pending"},
 ])
@@ -716,5 +574,4 @@ write_todos([
        subagent_type="report-writer")
 
 主代理：合并章节，添加执行摘要与参考文献
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 ```
