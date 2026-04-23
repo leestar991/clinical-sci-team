@@ -25,11 +25,8 @@ def setup_agent(
     """
 
     agent_name: str | None = runtime.context.get("agent_name") if runtime.context else None
-<<<<<<< HEAD
-=======
     agent_dir = None
     is_new_dir = False
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 
     try:
         paths = get_paths()
@@ -61,13 +58,8 @@ def setup_agent(
     except Exception as e:
         import shutil
 
-<<<<<<< HEAD
-        if agent_name and agent_dir.exists():
-            # Cleanup the custom agent directory only if it was created but an error occurred during setup
-=======
         if agent_name and is_new_dir and agent_dir is not None and agent_dir.exists():
             # Cleanup the custom agent directory only if it was newly created during this call
->>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
             shutil.rmtree(agent_dir)
         logger.error(f"[agent_creator] Failed to create agent '{agent_name}': {e}", exc_info=True)
         return Command(update={"messages": [ToolMessage(content=f"Error: {e}", tool_call_id=runtime.tool_call_id)]})
