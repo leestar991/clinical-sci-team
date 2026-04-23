@@ -9,6 +9,8 @@ import logging
 import re
 from pathlib import Path
 
+from deerflow.config.app_config import get_app_config
+
 logger = logging.getLogger(__name__)
 
 # File extensions that should be converted to markdown
@@ -63,9 +65,23 @@ def extract_outline(md_path: Path, max_items: int = _MAX_OUTLINE_ITEMS) -> list[
     return outline
 
 
+<<<<<<< HEAD
 def _convert_sync(file_path: Path) -> Path | None:
     """Blocking markitdown conversion — must be called from a thread pool."""
     from markitdown import MarkItDown
+=======
+def _get_uploads_config_value(key: str, default: object) -> object:
+    """Read a value from the uploads config, supporting dict and attribute access."""
+    cfg = get_app_config()
+    uploads_cfg = getattr(cfg, "uploads", None)
+    if isinstance(uploads_cfg, dict):
+        return uploads_cfg.get(key, default)
+    return getattr(uploads_cfg, key, default)
+
+
+def _get_pdf_converter() -> str:
+    """Read pdf_converter setting from app config, defaulting to 'auto'.
+>>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
 
     md = MarkItDown()
     result = md.convert(str(file_path))
@@ -85,9 +101,20 @@ async def convert_file_to_markdown(file_path: Path) -> Path | None:
         Path to the markdown file if conversion was successful, None otherwise.
     """
     try:
+<<<<<<< HEAD
         # markitdown.convert() is CPU/IO-bound and blocking; run in a thread
         # pool to avoid stalling the FastAPI event loop on large documents.
         return await asyncio.to_thread(_convert_sync, file_path)
     except Exception as e:
         logger.error(f"Failed to convert {file_path.name} to markdown: {e}")
         return None
+=======
+        raw = str(_get_uploads_config_value("pdf_converter", "auto")).strip().lower()
+        if raw not in _ALLOWED_PDF_CONVERTERS:
+            logger.warning("Invalid pdf_converter value %r; falling back to 'auto'", raw)
+            return "auto"
+        return raw
+    except Exception:
+        pass
+    return "auto"
+>>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9

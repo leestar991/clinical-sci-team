@@ -297,6 +297,147 @@ def test_circuit_breaker_does_not_trip_on_non_retriable_errors(monkeypatch: pyte
     assert middleware._check_circuit() is False
 
 
+# ---------- ReadError / RemoteProtocolError retriable classification ----------
+
+
+class _ReadError(Exception):
+    """Local stand-in for httpx.ReadError — same class name, no httpx dependency."""
+
+
+class _RemoteProtocolError(Exception):
+    """Local stand-in for httpx.RemoteProtocolError — same class name, no httpx dependency."""
+
+
+_ReadError.__name__ = "ReadError"
+_RemoteProtocolError.__name__ = "RemoteProtocolError"
+
+
+def test_classify_error_read_error_is_retriable() -> None:
+    middleware = _build_middleware()
+    exc = _ReadError("Connection dropped mid-stream")
+    exc.__class__.__name__ = "ReadError"
+    retriable, reason = middleware._classify_error(exc)
+    assert retriable is True
+    assert reason == "transient"
+
+
+def test_classify_error_remote_protocol_error_is_retriable() -> None:
+    middleware = _build_middleware()
+    exc = _RemoteProtocolError("Server closed connection unexpectedly")
+    exc.__class__.__name__ = "RemoteProtocolError"
+    retriable, reason = middleware._classify_error(exc)
+    assert retriable is True
+    assert reason == "transient"
+
+
+# ---------- RuntimeError: Event loop is closed retriable classification ----------
+
+
+def test_classify_error_event_loop_closed_is_retriable() -> None:
+    """RuntimeError 'Event loop is closed' is a transport-layer cleanup error.
+
+    The LLM response was received successfully; the error fires in
+    response.aclose() when an httpx connection's Transport._loop points at a
+    closed event loop (from a subagent's isolated asyncio.run() thread).
+    Classifying it as transient causes the middleware to retry with a fresh
+    connection, recovering the result without surfacing an error to the user.
+    """
+    middleware = _build_middleware()
+    exc = RuntimeError("Event loop is closed")
+    retriable, reason = middleware._classify_error(exc)
+    assert retriable is True
+    assert reason == "transient"
+
+
+def test_classify_error_event_loop_closed_case_insensitive() -> None:
+    """Message matching must be case-insensitive."""
+    middleware = _build_middleware()
+    exc = RuntimeError("event loop is closed")
+    retriable, reason = middleware._classify_error(exc)
+    assert retriable is True
+    assert reason == "transient"
+
+
+def test_classify_error_unrelated_runtime_error_is_generic() -> None:
+    """Only 'event loop is closed' RuntimeErrors are retriable; others stay generic."""
+    middleware = _build_middleware()
+    exc = RuntimeError("some other runtime error")
+    retriable, reason = middleware._classify_error(exc)
+    assert retriable is False
+    assert reason == "generic"
+
+
+@pytest.mark.anyio
+async def test_async_event_loop_closed_triggers_retry_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """awrap_model_call retries on RuntimeError 'Event loop is closed' and returns result."""
+    middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=10, retry_cap_delay_ms=10)
+    attempts = 0
+    waits: list[float] = []
+
+    async def fake_sleep(d: float) -> None:
+        waits.append(d)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    expected = AIMessage(content="hello")
+
+    async def handler(_request):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            raise RuntimeError("Event loop is closed")
+        return expected
+
+    result = await middleware.awrap_model_call(SimpleNamespace(), handler)
+
+    assert result is expected
+    assert attempts == 2
+    assert len(waits) == 1  # slept once between attempt 1 and 2
+
+
+def test_sync_read_error_triggers_retry_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=10, retry_cap_delay_ms=10)
+    attempts = 0
+    waits: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda d: waits.append(d))
+
+    def handler(_request) -> AIMessage:
+        nonlocal attempts
+        attempts += 1
+        raise _ReadError("Connection dropped mid-stream")
+
+    result = middleware.wrap_model_call(SimpleNamespace(), handler)
+
+    assert isinstance(result, AIMessage)
+    assert "temporarily unavailable" in result.content
+    assert attempts == 3  # exhausted all retries
+    assert len(waits) == 2  # slept between attempts 1→2 and 2→3
+
+
+@pytest.mark.anyio
+async def test_async_read_error_triggers_retry_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=10, retry_cap_delay_ms=10)
+    attempts = 0
+    waits: list[float] = []
+
+    async def fake_sleep(d: float) -> None:
+        waits.append(d)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    async def handler(_request) -> AIMessage:
+        nonlocal attempts
+        attempts += 1
+        raise _ReadError("Connection dropped mid-stream")
+
+    result = await middleware.awrap_model_call(SimpleNamespace(), handler)
+
+    assert isinstance(result, AIMessage)
+    assert "temporarily unavailable" in result.content
+    assert attempts == 3  # exhausted all retries
+    assert len(waits) == 2  # slept between attempts 1→2 and 2→3
+
+
 @pytest.mark.anyio
 async def test_async_circuit_breaker_trips_and_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify async version of circuit breaker correctly handles state transitions."""

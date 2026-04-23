@@ -103,6 +103,7 @@ async def task_tool(
     thread_id = None
     parent_model = None
     trace_id = None
+    metadata: dict = {}
 
     if runtime is not None:
         sandbox_state = runtime.state.get("sandbox")
@@ -122,8 +123,11 @@ async def task_tool(
     # Lazy import to avoid circular dependency
     from deerflow.tools import get_available_tools
 
+    # Inherit parent agent's tool_groups so subagents respect the same restrictions
+    parent_tool_groups = metadata.get("tool_groups")
+
     # Subagents should not have subagent tools enabled (prevent recursive nesting)
-    tools = get_available_tools(model_name=parent_model, subagent_enabled=False)
+    tools = get_available_tools(model_name=parent_model, groups=parent_tool_groups, subagent_enabled=False)
 
     # Create executor
     executor = SubagentExecutor(
@@ -235,7 +239,18 @@ async def task_tool(
                 writer({"type": "task_timed_out", "task_id": task_id, "error": result.error})
                 logger.warning(f"[trace={trace_id}] Task {task_id} timed out: {result.error}")
                 cleanup_background_task(task_id)
-                return f"Task timed out. Error: {result.error}"
+                partial = ""
+                if result.ai_messages:
+                    last_msg = result.ai_messages[-1]
+                    content = last_msg.get("content", "")
+                    if isinstance(content, str) and content.strip():
+                        partial = f"\n\nPartial result (work completed before timeout):\n{content[:4000]}"
+                    elif isinstance(content, list):
+                        texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+                        text = "\n".join(t for t in texts if t.strip())
+                        if text:
+                            partial = f"\n\nPartial result (work completed before timeout):\n{text[:4000]}"
+                return f"Task timed out after {config.timeout_seconds}s. Error: {result.error}{partial}"
 
             # Still running, wait before next poll
             await asyncio.sleep(5)

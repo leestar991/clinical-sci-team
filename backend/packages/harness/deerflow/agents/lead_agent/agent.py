@@ -332,6 +332,10 @@ def make_lead_agent(config: RunnableConfig):
             "reasoning_effort": reasoning_effort,
             "is_plan_mode": is_plan_mode,
             "subagent_enabled": subagent_enabled,
+<<<<<<< HEAD
+=======
+            "tool_groups": agent_config.tool_groups if agent_config else None,
+>>>>>>> 862cdec72d984a9c3e86fb908dbdbb3eacdb48a9
             "allowed_subagents": agent_config.allowed_subagents if agent_config else None,
         }
     )

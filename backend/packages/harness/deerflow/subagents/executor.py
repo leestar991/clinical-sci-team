@@ -11,6 +11,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+import httpx
+
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from langchain_core.messages import AIMessage, HumanMessage
@@ -73,11 +75,13 @@ _background_tasks_lock = threading.Lock()
 _scheduler_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-scheduler-")
 
 # Thread pool for actual subagent execution (with timeout support)
-# Larger pool to avoid blocking when scheduler submits execution tasks
-_execution_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-exec-")
+# Larger pool to avoid blocking when scheduler submits execution tasks.
+# Headroom beyond MAX_CONCURRENT_SUBAGENTS=3 allows retries to start while
+# timed-out threads are still draining their cooperative cancellation.
+_execution_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="subagent-exec-")
 
 # Dedicated pool for sync execute() calls made from an already-running event loop.
-_isolated_loop_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-isolated-")
+_isolated_loop_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="subagent-isolated-")
 
 
 def _filter_tools(
@@ -169,7 +173,16 @@ class SubagentExecutor:
     def _create_agent(self):
         """Create the agent instance."""
         model_name = _get_model_name(self.config, self.parent_model)
-        model = create_chat_model(name=model_name, thinking_enabled=False)
+        # Subagents run in isolated event loops (asyncio.run() in a thread pool).
+        # Connections with keep-alive persist in the httpx pool after the isolated
+        # loop closes, leaving Transport._loop pointing at the dead loop.  When the
+        # main loop later does pool cleanup (response.aclose()), it hits
+        # "RuntimeError: Event loop is closed".  Disabling keep-alive ensures every
+        # connection is closed immediately after each request, eliminating the leak.
+        _no_keepalive_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_keepalive_connections=0, max_connections=100),
+        )
+        model = create_chat_model(name=model_name, thinking_enabled=False, http_async_client=_no_keepalive_client)
 
         from deerflow.agents.middlewares.tool_error_handling_middleware import build_subagent_runtime_middlewares
 
@@ -407,6 +420,16 @@ class SubagentExecutor:
 
                 loop.run_until_complete(loop.shutdown_asyncgens())
                 loop.run_until_complete(loop.shutdown_default_executor())
+
+                # Drain any Transport objects that httpx/httpcore left open so their
+                # _loop references are cleared before we call loop.close().  Without
+                # this, the closed-loop Transports stay in the httpx keep-alive pool
+                # and cause "RuntimeError: Event loop is closed" in the main loop
+                # when it later does pool cleanup.  See: _create_agent() comment.
+                async def _drain_transports() -> None:
+                    await asyncio.sleep(0)
+
+                loop.run_until_complete(_drain_transports())
             except Exception:
                 logger.debug(
                     f"[trace={self.trace_id}] Failed while cleaning up isolated event loop for subagent {self.config.name}",

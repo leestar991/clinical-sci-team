@@ -155,11 +155,21 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         if _matches_any(lowered, _AUTH_PATTERNS):
             return False, "auth"
 
+        # Transport-layer cleanup error: httpx connection pool tries to close a
+        # connection whose Transport._loop points at a now-closed event loop
+        # (from a subagent's isolated asyncio.run() thread).  The LLM data was
+        # already received (200 OK confirmed); the error fires in response.aclose().
+        # Retrying gets a fresh connection and recovers the result.
+        if isinstance(exc, RuntimeError) and "event loop is closed" in lowered:
+            return True, "transient"
+
         exc_name = exc.__class__.__name__
         if exc_name in {
             "APITimeoutError",
             "APIConnectionError",
             "InternalServerError",
+            "ReadError",  # httpx.ReadError: connection dropped mid-stream
+            "RemoteProtocolError",  # httpx: server closed connection unexpectedly
         }:
             return True, "transient"
         if status_code in _RETRIABLE_STATUS_CODES:
