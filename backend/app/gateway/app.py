@@ -138,6 +138,12 @@ async def _check_and_cancel_stuck_runs(client: httpx.AsyncClient) -> None:
                 logger.exception("Failed to cancel stuck run %s on thread %s", run_id, thread_id)
 
 
+# Upper bound (seconds) each lifespan shutdown hook is allowed to run.
+# Bounds worker exit time so uvicorn's reload supervisor does not keep
+# firing signals into a worker that is stuck waiting for shutdown cleanup.
+_SHUTDOWN_HOOK_TIMEOUT_SECONDS = 5.0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
@@ -177,11 +183,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             with contextlib.suppress(asyncio.CancelledError):
                 await monitor_task
 
-        # Stop channel service on shutdown
+        # Stop channel service on shutdown (bounded to prevent worker hang)
         try:
             from app.channels.service import stop_channel_service
 
-            await stop_channel_service()
+            await asyncio.wait_for(
+                stop_channel_service(),
+                timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Channel service shutdown exceeded %.1fs; proceeding with worker exit.",
+                _SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+            )
         except Exception:
             logger.exception("Failed to stop channel service")
 
