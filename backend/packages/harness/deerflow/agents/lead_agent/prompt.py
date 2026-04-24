@@ -194,17 +194,22 @@ def _build_available_subagents_description(available_names: list[str], bash_avai
     return "\n".join(lines)
 
 
-def _build_subagent_section(max_concurrent: int) -> str:
+def _build_subagent_section(max_concurrent: int, allowed_subagents: list[str] | None = None) -> str:
     """Build the subagent system prompt section with dynamic concurrency limit.
 
     Args:
         max_concurrent: Maximum number of concurrent subagent calls allowed per response.
+        allowed_subagents: Optional allowlist of subagent names. If provided, only these
+            subagents are shown in the prompt.
 
     Returns:
         Formatted subagent section string.
     """
     n = max_concurrent
     available_names = get_available_subagent_names()
+    if allowed_subagents is not None:
+        allowed_set = set(allowed_subagents)
+        available_names = [name for name in available_names if name in allowed_set]
     bash_available = "bash" in available_names
 
     # Dynamically build subagent type descriptions from registry (aligned with Codex's
@@ -703,13 +708,13 @@ def _build_custom_mounts_section() -> str:
     return f"\n**Custom Mounted Directories:**\n{mounts_list}\n- If the user needs files outside `/mnt/user-data`, use these absolute container paths directly when they match the requested directory"
 
 
-def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagents: int = 3, *, agent_name: str | None = None, available_skills: set[str] | None = None) -> str:
+def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagents: int = 3, *, agent_name: str | None = None, available_skills: set[str] | None = None, allowed_subagents: list[str] | None = None) -> str:
     # Get memory context
     memory_context = _get_memory_context(agent_name)
 
     # Include subagent section only if enabled (from runtime parameter)
     n = max_concurrent_subagents
-    subagent_section = _build_subagent_section(n) if subagent_enabled else ""
+    subagent_section = _build_subagent_section(n, allowed_subagents=allowed_subagents) if subagent_enabled else ""
 
     # Add subagent reminder to critical_reminders if enabled
     subagent_reminder = (
