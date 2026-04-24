@@ -75,13 +75,11 @@ _background_tasks_lock = threading.Lock()
 _scheduler_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-scheduler-")
 
 # Thread pool for actual subagent execution (with timeout support)
-# Larger pool to avoid blocking when scheduler submits execution tasks.
-# Headroom beyond MAX_CONCURRENT_SUBAGENTS=3 allows retries to start while
-# timed-out threads are still draining their cooperative cancellation.
-_execution_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="subagent-exec-")
+# Larger pool to avoid blocking when scheduler submits execution tasks
+_execution_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-exec-")
 
 # Dedicated pool for sync execute() calls made from an already-running event loop.
-_isolated_loop_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="subagent-isolated-")
+_isolated_loop_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-isolated-")
 
 
 def _filter_tools(
