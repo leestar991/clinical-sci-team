@@ -1,11 +1,18 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { QueryClientProvider } from '@/components/query-client-provider';
+import { SidebarProvider } from '@/components/ui/sidebar';
+import { ArtifactsProvider } from '@/components/workspace/artifacts/context';
 import GameCanvas from './GameCanvas';
 import Tooltip from './Tooltip';
-import AgentCard from './AgentCard';
+import ChatEmbed from './ChatEmbed';
+import { SubtaskDialog } from './SubtaskDialog';
 import { DEFAULT_MAP_CONFIG, MAP_VARIANTS } from '../config/constants';
-import type { AgentData } from '../types';
+import { fetchAgentValleyData, type AgentValleyData } from '../data/realData';
+import { useSubtasks } from '../hooks/useSubtasks';
+import type { Agent } from '../types';
+import type { Subtask } from '../types/subtask';
 import '../styles/agent-valley.css';
 
 const UI_W = 28 * 32;
@@ -15,7 +22,8 @@ const MAP_SCALE_BOOST = 1.8;
 
 export default function AgentValleyApp() {
   const [tooltip, setTooltip] = useState<any>(null);
-  const [agentCard, setAgentCard] = useState<AgentData | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [selectedSubtask, setSelectedSubtask] = useState<Subtask | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [activeMapId, setActiveMapId] = useState(DEFAULT_MAP_CONFIG.id);
   const [cursorState, setCursorState] = useState('normal');
@@ -23,10 +31,49 @@ export default function AgentValleyApp() {
   const layoutRef = useRef<HTMLDivElement>(null);
   const gameEngineRef = useRef<any>(null);
   const [mapSize, setMapSize] = useState<{ w: number; h: number } | null>(null);
+  const [agentData, setAgentData] = useState<AgentValleyData | null>(null);
+  const [isLoadingData, setIsLoadingData] = useState(true);
+  const [isChatting, setIsChatting] = useState(false); // Track if AI is responding
+  const [isWaitingForUser, setIsWaitingForUser] = useState(false); // Track if waiting for user input
   const [viewport, setViewport] = useState(() => ({
     w: typeof window !== 'undefined' ? window.innerWidth : UI_W,
     h: typeof window !== 'undefined' ? window.innerHeight : UI_H,
   }));
+
+  // Use subtasks hook to get subtasks from thread messages
+  const { subtasks } = useSubtasks(agentData?.thread?.values?.messages, {
+    sceneW: 896,
+    sceneH: 640,
+  });
+
+  // Fetch real agent data
+  useEffect(() => {
+    let mounted = true;
+
+    const loadData = async () => {
+      console.log('[AgentValleyApp] Loading data...');
+      setIsLoadingData(true);
+      const data = await fetchAgentValleyData();
+      console.log('[AgentValleyApp] Data loaded:', data);
+      if (mounted) {
+        setAgentData(data);
+        setIsLoadingData(false);
+      }
+    };
+
+    // Load data immediately
+    loadData();
+
+    // Refresh every 5 seconds for real-time subtask updates
+    const interval = setInterval(() => {
+      loadData();
+    }, 5000);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     const el = layoutRef.current;
@@ -58,17 +105,53 @@ export default function AgentValleyApp() {
     setTooltip(null);
   }, []);
 
-  const handleNpcClick = useCallback((data: AgentData) => {
-    setAgentCard(data);
-    setCanvasRefreshTrigger((n) => n + 1);
-  }, []);
+  const handleNpcClick = useCallback((data: any) => {
+    // Extract npcId from the data
+    const npcId = data?.agent?.id || data?.id;
+
+    if (!npcId) {
+      return;
+    }
+
+    // Check if it's a subtask
+    if (typeof npcId === 'string' && npcId.startsWith('subtask:')) {
+      const subtaskId = npcId.replace('subtask:', '');
+      const subtask = subtasks.get(subtaskId);
+      if (subtask) {
+        setSelectedSubtask(subtask);
+
+        // Hide exclamation mark when user views the subtask result
+        if (gameEngineRef.current) {
+          gameEngineRef.current.showExclamationMark(npcId, false);
+        }
+      }
+    } else {
+      // Main agent: open chat dialog
+      if (agentData?.thread?.thread_id) {
+        setSelectedThreadId(agentData.thread.thread_id);
+      }
+    }
+  }, [agentData, subtasks, gameEngineRef]);
 
   const handleCursorStateChange = useCallback((nextState: string) => {
     setCursorState(nextState || 'normal');
   }, []);
 
-  const handleCloseCard = useCallback(() => {
-    setAgentCard(null);
+  const handleCloseChat = useCallback(() => {
+    setSelectedThreadId(null);
+
+    // Don't reset chatting state if AI is still responding
+    if (!isChatting) {
+      setIsWaitingForUser(false);
+    }
+  }, [isChatting, isWaitingForUser]);
+
+  const handleChatStatusChange = useCallback((isLoading: boolean) => {
+    setIsChatting(isLoading);
+  }, []);
+
+  const handleWaitingForUser = useCallback((isWaiting: boolean) => {
+    setIsWaitingForUser(isWaiting);
   }, []);
 
   const mapBaseW = mapSize?.w ?? UI_W;
@@ -92,7 +175,11 @@ export default function AgentValleyApp() {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       if ((event.target as HTMLElement).isContentEditable) return;
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
-      if (event.key === 'Escape') { setConsoleOpen(false); return; }
+      if (event.key === 'Escape') {
+        setConsoleOpen(false);
+        setSelectedThreadId(null);
+        return;
+      }
       if (event.key === 'c' || event.key === 'C') { setConsoleOpen((v) => !v); return; }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -100,11 +187,14 @@ export default function AgentValleyApp() {
   }, []);
 
   return (
-    <div
-      className={`app-layout agent-town-cursor cursor-${cursorState}`}
-      data-map-theme={activeMapConfig.id}
-      ref={layoutRef}
-    >
+    <QueryClientProvider>
+      <SidebarProvider>
+        <ArtifactsProvider>
+          <div
+            className={`app-layout agent-town-cursor cursor-${cursorState}`}
+            data-map-theme={activeMapConfig.id}
+            ref={layoutRef}
+          >
       <nav className="town-hud">
         <button
           type="button"
@@ -138,18 +228,71 @@ export default function AgentValleyApp() {
             mapConfig={activeMapConfig}
             refreshTrigger={canvasRefreshTrigger}
             gameEngineRef={gameEngineRef}
+            agentData={agentData}
+            isLoadingData={isLoadingData}
+            isChatting={isChatting}
+            isWaitingForUser={isWaitingForUser}
           />
         </div>
       </div>
 
       <Tooltip data={tooltip} />
 
-      {agentCard && (
-        <AgentCard
-          data={agentCard}
-          onClose={handleCloseCard}
+      {selectedThreadId && (
+        <ChatEmbed
+          threadId={selectedThreadId}
+          onClose={handleCloseChat}
+          onChatStatusChange={handleChatStatusChange}
+          onWaitingForUser={handleWaitingForUser}
         />
       )}
+
+      {selectedSubtask && (
+        <SubtaskDialog
+          subtask={selectedSubtask}
+          onClose={() => setSelectedSubtask(null)}
+        />
+      )}
+
+      {consoleOpen && (
+        <div className="console-overlay">
+          <div className="console-panel">
+            <div className="console-header">
+              <span>Agent Valley Console</span>
+              <button onClick={() => setConsoleOpen(false)}>×</button>
+            </div>
+            <div className="console-content">
+              {agentData?.thread ? (
+                <>
+                  <div className="console-line">
+                    <span className="console-label">Thread ID:</span>
+                    <span className="console-value">{agentData.thread.thread_id}</span>
+                  </div>
+                  <div className="console-line">
+                    <span className="console-label">Agent:</span>
+                    <span className="console-value">{agentData.agentName}</span>
+                  </div>
+                  <div className="console-line">
+                    <span className="console-label">Character:</span>
+                    <span className="console-value">{agentData.charName}</span>
+                  </div>
+                  <div className="console-line">
+                    <span className="console-label">Updated:</span>
+                    <span className="console-value">
+                      {new Date(agentData.thread.updated_at).toLocaleString()}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="console-line">No active thread</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+    </ArtifactsProvider>
+    </SidebarProvider>
+    </QueryClientProvider>
   );
 }

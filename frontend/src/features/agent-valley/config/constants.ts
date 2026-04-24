@@ -44,12 +44,9 @@ export const SCENE_H = 640;
 // Agent status types
 export type AgentStatus = 'idle' | 'working' | 'pending' | 'offline';
 
-// Agent character names - all available characters
+// Agent character names - matching actual file names (capitalized)
 export const AGENT_CHARACTERS = [
-  'adam', 'alex', 'amelia', 'bob', 'camila', 'charlie',
-  'emily', 'emma', 'frank', 'grace', 'isabella', 'jack',
-  'john', 'lily', 'lucy', 'mason', 'mia', 'noah',
-  'olivia', 'pete', 'sam', 'sophia', 'william',
+  'Adam', 'Alex', 'Amelia', 'Bob', 'Lucy',
 ];
 
 export function getRandomCharacter(): string {

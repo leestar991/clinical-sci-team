@@ -2,18 +2,23 @@
 
 import { useRef, useEffect, useState } from 'react';
 import GameEngine from '../engine/GameEngine';
-import { fetchData } from '../data/mockData';
-import type { AgentData } from '../types';
+import type { AgentValleyData } from '../data/realData';
+import type { Agent } from '../types';
+import { useSubtasks } from '../hooks/useSubtasks';
 
 interface GameCanvasProps {
-  onNpcHover?: (data: AgentData, pos: { x: number; y: number }) => void;
+  onNpcHover?: (data: any, pos: { x: number; y: number }) => void;
   onNpcLeave?: () => void;
-  onNpcClick?: (data: AgentData) => void;
+  onNpcClick?: (data: any) => void;
   onCursorStateChange?: (state: string) => void;
   onLayoutChange?: (layout: { sceneW: number; sceneH: number }) => void;
   mapConfig: any;
   refreshTrigger?: number;
   gameEngineRef?: React.MutableRefObject<any>;
+  agentData: AgentValleyData | null;
+  isLoadingData?: boolean;
+  isChatting?: boolean;
+  isWaitingForUser?: boolean;
 }
 
 export default function GameCanvas({
@@ -25,13 +30,17 @@ export default function GameCanvas({
   mapConfig,
   refreshTrigger = 0,
   gameEngineRef,
+  agentData,
+  isLoadingData = false,
+  isChatting = false,
+  isWaitingForUser = false,
 }: GameCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
-  const refreshFnRef = useRef<(() => Promise<void>) | null>(null);
   const [progress, setProgress] = useState(0);
   const [loadText, setLoadText] = useState('Loading assets...');
+  const [engineReady, setEngineReady] = useState(false); // Track if engine is fully initialized
 
   const cbRef = useRef({
     onNpcHover,
@@ -51,8 +60,9 @@ export default function GameCanvas({
   useEffect(() => {
     if (!containerRef.current) return;
     let aborted = false;
-    let refreshTimer: NodeJS.Timeout | null = null;
     let hideLoadingTimer: NodeJS.Timeout | null = null;
+
+    setEngineReady(false);
 
     const engine = new GameEngine({ mapConfig });
     engineRef.current = engine;
@@ -66,8 +76,10 @@ export default function GameCanvas({
 
     (async () => {
       try {
+        if (aborted) return;
         engine.init(containerRef.current!);
 
+        if (aborted) return;
         await engine.loadAssets((p, label) => {
           if (aborted) return;
           setProgress(p);
@@ -75,24 +87,8 @@ export default function GameCanvas({
         });
         if (aborted) return;
 
-        const data = await fetchData();
-        if (aborted) return;
-
-        engine.populateNPCs(data.agents || [], data.events || []);
-
-        const doRefresh = async () => {
-          try {
-            const nextData = await fetchData();
-            if (!aborted) {
-              engine.updateData(nextData.agents || [], nextData.events || []);
-            }
-          } catch (err) {
-            console.error('[GameCanvas] refresh error:', err);
-          }
-        };
-        refreshFnRef.current = doRefresh;
-
-        refreshTimer = setInterval(doRefresh, 15000);
+        console.log('[GameCanvas] Engine fully initialized and ready');
+        setEngineReady(true); // Mark engine as ready
       } catch (err) {
         console.error('[GameCanvas] init error:', err);
       }
@@ -110,21 +106,102 @@ export default function GameCanvas({
 
     return () => {
       aborted = true;
-      refreshFnRef.current = null;
-      if (refreshTimer) clearInterval(refreshTimer);
       if (hideLoadingTimer) clearTimeout(hideLoadingTimer);
+      setEngineReady(false);
       engine.destroy();
       engineRef.current = null;
       if (gameEngineRef) gameEngineRef.current = null;
       cbRef.current.onCursorStateChange?.('normal');
     };
-  }, [mapConfig, gameEngineRef]);
+  }, [mapConfig, gameEngineRef]); // Only re-initialize when map config changes
 
+  // Use subtasks hook to monitor stream messages
+  const { subtasks } = useSubtasks(agentData?.thread?.values?.messages, {
+    sceneW: 896,
+    sceneH: 640,
+  });
+
+  // Log subtasks changes
   useEffect(() => {
-    if (refreshTrigger > 0) {
-      refreshFnRef.current?.();
+    console.log('[GameCanvas] Subtasks changed, count:', subtasks.size);
+    if (subtasks.size > 0) {
+      console.log('[GameCanvas] Subtasks:', Array.from(subtasks.values()));
     }
-  }, [refreshTrigger]);
+  }, [subtasks]);
+
+  // Separate effect to handle agent data updates (without re-initializing engine)
+  useEffect(() => {
+    // Wait for engine to be fully initialized and data to be loaded
+    if (!engineRef.current || !engineReady || isLoadingData) {
+      return;
+    }
+
+    const agents: Agent[] = [];
+
+    // 1. Create main agent
+    const agentStatus = isChatting ? 'working' : 'idle';
+
+    const mainAgent: Agent = agentData?.thread ? {
+      id: agentData.thread.thread_id,
+      name: agentData.agentName,
+      session_key: agentData.thread.thread_id,
+      provider: 'anthropic',
+      model: 'claude-sonnet-4',
+      status: agentStatus,
+      charName: agentData.charName,
+      position: { x: 350, y: 500 },
+      first_seen_at: agentData.thread.updated_at,
+    } : {
+      id: 'agent-1',
+      name: agentData?.agentName || 'AI Assistant',
+      session_key: undefined,
+      provider: 'anthropic',
+      model: 'claude-sonnet-4',
+      status: agentStatus,
+      charName: agentData?.charName || 'Alex',
+      position: { x: 350, y: 500 },
+      first_seen_at: new Date().toISOString(),
+    };
+
+    agents.push(mainAgent);
+
+    // 2. Create subtask agents
+    for (const [id, subtask] of subtasks.entries()) {
+      const subtaskAgent: Agent = {
+        id: `subtask:${id}`,
+        name: subtask.description,
+        session_key: undefined,
+        provider: 'anthropic',
+        model: 'claude-sonnet-4',
+        status: subtask.status === 'working' || subtask.status === 'spawning' ? 'working' : 'idle',
+        charName: subtask.charName,
+        position: subtask.position,
+        first_seen_at: new Date(subtask.createdAt).toISOString(),
+        is_subagent: true,
+        parent_agent_id: mainAgent.id,
+      };
+      agents.push(subtaskAgent);
+    }
+
+    engineRef.current.updateData(agents, []);
+
+    // Update exclamation marks
+    // Main agent
+    if (isWaitingForUser) {
+      engineRef.current.showExclamationMark(mainAgent.id, true);
+    } else {
+      engineRef.current.showExclamationMark(mainAgent.id, false);
+    }
+
+    // Subtask agents
+    for (const [id, subtask] of subtasks.entries()) {
+      if (subtask.status === 'completed') {
+        engineRef.current.showExclamationMark(`subtask:${id}`, true);
+      } else {
+        engineRef.current.showExclamationMark(`subtask:${id}`, false);
+      }
+    }
+  }, [agentData, isLoadingData, engineReady, isChatting, isWaitingForUser, subtasks]);
 
   return (
     <div className="townWrap visible">
