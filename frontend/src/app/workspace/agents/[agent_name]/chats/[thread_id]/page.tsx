@@ -34,6 +34,9 @@ import { cn } from "@/lib/utils";
 export default function AgentChatPage() {
   const { t } = useI18n();
   const [showFollowups, setShowFollowups] = useState(false);
+  const [viewMode, setViewMode] = useState<"conversation" | "studio">(
+    "conversation",
+  );
   const router = useRouter();
 
   const { agent_name } = useParams<{
@@ -119,6 +122,22 @@ export default function AgentChatPage() {
               <ThreadTitle threadId={threadId} thread={thread} />
             </div>
             <div className="mr-4 flex items-center">
+              <div className="mr-2 flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={viewMode === "conversation" ? "default" : "secondary"}
+                  onClick={() => setViewMode("conversation")}
+                >
+                  对话
+                </Button>
+                <Button
+                  size="sm"
+                  variant={viewMode === "studio" ? "default" : "secondary"}
+                  onClick={() => setViewMode("studio")}
+                >
+                  工作室
+                </Button>
+              </div>
               <Tooltip content={t.agents.newChat}>
                 <Button
                   size="sm"
@@ -140,69 +159,83 @@ export default function AgentChatPage() {
           </header>
 
           <main className="flex min-h-0 max-w-full grow flex-col">
-            <div className="flex size-full justify-center">
-              <MessageList
-                className={cn("size-full", !isNewThread && "pt-10")}
-                threadId={threadId}
-                thread={thread}
-                paddingBottom={messageListPaddingBottom}
-                tokenUsageEnabled={tokenUsageEnabled}
-              />
-            </div>
-
-            <div className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4">
-              <div
-                className={cn(
-                  "relative w-full",
-                  isNewThread && "-translate-y-[calc(50vh-96px)]",
-                  isNewThread
-                    ? "max-w-(--container-width-sm)"
-                    : "max-w-(--container-width-md)",
-                )}
-              >
-                <div className="absolute -top-4 right-0 left-0 z-0">
-                  <div className="absolute right-0 bottom-0 left-0">
-                    <TodoList
-                      className="bg-background/5"
-                      todos={thread.values.todos ?? []}
-                      hidden={
-                        !thread.values.todos || thread.values.todos.length === 0
-                      }
-                    />
-                  </div>
-                </div>
-
-                <InputBox
-                  className={cn("bg-background/5 w-full -translate-y-4")}
-                  isNewThread={isNewThread}
+            {viewMode === "conversation" ? (
+              <div className="flex size-full justify-center">
+                <MessageList
+                  className={cn("size-full", !isNewThread && "pt-10")}
                   threadId={threadId}
-                  autoFocus={isNewThread}
-                  status={
-                    thread.error
-                      ? "error"
-                      : thread.isLoading
-                        ? "streaming"
-                        : "ready"
-                  }
-                  context={settings.context}
-                  extraHeader={
-                    isNewThread && (
-                      <AgentWelcome agent={agent} agentName={agent_name} />
-                    )
-                  }
-                  disabled={env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"}
-                  onContextChange={(context) => setSettings("context", context)}
-                  onFollowupsVisibilityChange={setShowFollowups}
-                  onSubmit={handleSubmit}
-                  onStop={handleStop}
+                  thread={thread}
+                  paddingBottom={messageListPaddingBottom}
+                  tokenUsageEnabled={tokenUsageEnabled}
                 />
-                {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (
-                  <div className="text-muted-foreground/67 w-full translate-y-12 text-center text-xs">
-                    {t.common.notAvailableInDemoMode}
-                  </div>
-                )}
               </div>
-            </div>
+            ) : (
+              <div className="size-full px-4 pt-14 pb-4">
+                <iframe
+                  title="agent-valley-studio"
+                  src="http://139.196.193.213:6874/agent-valley"
+                  className="h-full w-full rounded-md border bg-white"
+                />
+              </div>
+            )}
+
+            {viewMode === "conversation" && (
+              <div className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4">
+                <div
+                  className={cn(
+                    "relative w-full",
+                    isNewThread && "-translate-y-[calc(50vh-96px)]",
+                    isNewThread
+                      ? "max-w-(--container-width-sm)"
+                      : "max-w-(--container-width-md)",
+                  )}
+                >
+                  <div className="absolute -top-4 right-0 left-0 z-0">
+                    <div className="absolute right-0 bottom-0 left-0">
+                      <TodoList
+                        className="bg-background/5"
+                        todos={thread.values.todos ?? []}
+                        hidden={
+                          !thread.values.todos || thread.values.todos.length === 0
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <InputBox
+                    className={cn("bg-background/5 w-full -translate-y-4")}
+                    isNewThread={isNewThread}
+                    threadId={threadId}
+                    autoFocus={isNewThread}
+                    status={
+                      thread.error
+                        ? "error"
+                        : thread.isLoading
+                          ? "streaming"
+                          : "ready"
+                    }
+                    context={settings.context}
+                    extraHeader={
+                      isNewThread && (
+                        <AgentWelcome agent={agent} agentName={agent_name} />
+                      )
+                    }
+                    disabled={env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"}
+                    onContextChange={(context) =>
+                      setSettings("context", context)
+                    }
+                    onFollowupsVisibilityChange={setShowFollowups}
+                    onSubmit={handleSubmit}
+                    onStop={handleStop}
+                  />
+                  {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (
+                    <div className="text-muted-foreground/67 w-full translate-y-12 text-center text-xs">
+                      {t.common.notAvailableInDemoMode}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </main>
         </div>
       </ChatBox>
