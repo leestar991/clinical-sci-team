@@ -66,10 +66,9 @@ Plan every slide as one of three types and include the `slide_type` field in the
 
 ## Step 1 — Read Skills (MANDATORY)
 
-```bash
-read_file /mnt/skills/public/ppt-generation/SKILL.md
-read_file /mnt/skills/public/image-generation/SKILL.md
-```
+Use the `read_file` tool to read both skill files:
+- `/mnt/skills/public/ppt-generation/SKILL.md`
+- `/mnt/skills/public/image-generation/SKILL.md`
 
 ## Step 2 — Create Presentation Plan
 
@@ -96,7 +95,7 @@ Create `/mnt/user-data/workspace/sci-plan.json` following the ppt-generation ski
       "visual_description": "Dramatic dark premium title slide. Deep black background with subtle molecular network pattern fading in. Bold white study title centered. Subtitle in luminous blue. Company logo top-right. Clinical authority aesthetic."
     },
     {
-      "slide_number": 3,
+      "slide_number": 2,
       "type": "content",
       "slide_type": "data",
       "title": "Primary Endpoint: Best-Corrected Visual Acuity",
@@ -380,35 +379,35 @@ def box_with_stats(data_dict, output_path, ylabel="Value"):
 ## Text and Numeric Conventions
 
 **Statistical notation:**
-- p值: `p = 0.032`（不写"p < 0.05"，除非确实如此）
-- 置信区间: `95% CI: 1.23–4.56`（使用 en-dash）
-- 均值±标准差: `mean ± SD = 45.2 ± 8.3`
-- 中位数（IQR）: `median (IQR) = 12.5 (8.0–18.0)`
-- 百分比: 保留1位小数，如 `73.2%`
-- 样本量: `N = 256`（总体大写N）；`n = 42`（子组小写n）
+- p-value: `p = 0.032` (do not write "p < 0.05" unless that is the exact reported value)
+- Confidence interval: `95% CI: 1.23–4.56` (use en-dash, not hyphen)
+- Mean ± SD: `mean ± SD = 45.2 ± 8.3`
+- Median (IQR): `median (IQR) = 12.5 (8.0–18.0)`
+- Percentages: one decimal place, e.g. `73.2%` (not `73%`)
+- Sample size: `N = 256` (uppercase N for total); `n = 42` (lowercase n for subgroup)
 
 **Slide text limits:**
-- 标题: ≤ 10词，一行
-- 要点: ≤ 6条/张，每条 ≤ 2行
-- 正文字号: ≥ 16pt
+- Title: ≤ 10 words, single line
+- Bullet points: ≤ 6 per slide, ≤ 2 lines each
+- Body font size: ≥ 16pt (ensure legibility from back of room)
 
-**Table format:** 三线表（顶线、栏头线、底线，无竖线）；数字右对齐，文字左对齐
+**Table format:** Three-line table (top rule, header rule, bottom rule — no vertical lines); numbers right-aligned, text left-aligned
 
 </scientific_text_standards>
 
 <output_standards>
-1. 所有 matplotlib 图表 DPI ≥ 300
-2. 严格遵循 ppt-generation/SKILL.md 的顺序生成规则（绝不并行生成幻灯片图像）
-3. 数据幻灯片的图表必须以原始文件传入（第二个 `--reference-images` 参数），确保数据准确
-4. 统计注释完整（n、检验方法、p值、CI）
-5. 颜色优先使用色盲友好调色板（colorbrewer / matplotlib "colorblind" 主题）
-6. 用 `present_files` 工具展示最终 PPTX 文件
-7. 主动告知用户每张幻灯片使用的 `slide_type`，并提供逐张重新生成选项
+1. All matplotlib charts saved at DPI ≥ 300
+2. Strictly follow ppt-generation/SKILL.md sequential generation rules — never generate slide images in parallel
+3. For data slides, the chart image must be passed as the second `--reference-images` argument to ensure data accuracy
+4. Statistical annotations must be complete (n, test method, p-value, CI)
+5. Prefer color-blind-friendly palettes (colorbrewer or matplotlib "colorblind" theme)
+6. Use `present_files` tool to deliver the final PPTX to the user
+7. Proactively inform the user which `slide_type` each slide uses, and offer to regenerate individual slides if needed
 </output_standards>
 """,
     tools=["read_file", "write_file", "bash", "str_replace"],
-    disallowed_tools=["task"],
-    model="claude-opus-4-6",
+    disallowed_tools=["task", "ask_clarification"],
+    model="claude-opus-4-6",  # Opus: complex multi-skill workflow requires high instruction-following fidelity
     max_turns=80,
     timeout_seconds=1800,
 )
