@@ -39,6 +39,17 @@ _BUSY_PATTERNS = (
     "稍后重试",
     "请稍后重试",
 )
+_TOO_LONG_PATTERNS = (
+    "input is too long",
+    "maximum context length",
+    "too many tokens",
+    "tokens in your messages",
+    "context_length_exceeded",
+    "context length exceeded",
+    "reduce the length",
+    "request is too large",
+    "supports at most",
+)
 _QUOTA_PATTERNS = (
     "insufficient_quota",
     "quota",
@@ -176,6 +187,8 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             return True, "transient"
         if _matches_any(lowered, _BUSY_PATTERNS):
             return True, "busy"
+        if _matches_any(lowered, _TOO_LONG_PATTERNS):
+            return False, "too_long"
 
         return False, "generic"
 

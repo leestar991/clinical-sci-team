@@ -414,6 +414,39 @@ def test_sync_read_error_triggers_retry_loop(monkeypatch: pytest.MonkeyPatch) ->
     assert len(waits) == 2  # slept between attempts 1→2 and 2→3
 
 
+class TestClassifyTooLong:
+    def _mw(self):
+        return LLMErrorHandlingMiddleware()
+
+    def test_input_too_long_from_gateway(self):
+        mw = self._mw()
+        err = FakeError("Error code: 400 - {'message': 'Input is too long for requested model.'}", status_code=400)
+        retriable, reason = mw._classify_error(err)
+        assert not retriable
+        assert reason == "too_long"
+
+    def test_openai_context_length_exceeded(self):
+        mw = self._mw()
+        err = FakeError("This model's maximum context length is 16385 tokens. However, your messages resulted in 20000 tokens.")
+        retriable, reason = mw._classify_error(err)
+        assert not retriable
+        assert reason == "too_long"
+
+    def test_max_tokens_exceeded(self):
+        mw = self._mw()
+        err = FakeError("max_tokens is too large: 8192. This model supports at most 4096 completion tokens")
+        retriable, reason = mw._classify_error(err)
+        assert not retriable
+        assert reason == "too_long"
+
+    def test_generic_400_not_classified_as_too_long(self):
+        """A plain 400 without too-long keywords must remain 'generic'."""
+        mw = self._mw()
+        err = FakeError("Bad request", status_code=400)
+        retriable, reason = mw._classify_error(err)
+        assert reason == "generic"
+
+
 @pytest.mark.anyio
 async def test_async_read_error_triggers_retry_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     middleware = _build_middleware(retry_max_attempts=3, retry_base_delay_ms=10, retry_cap_delay_ms=10)
