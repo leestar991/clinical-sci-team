@@ -155,6 +155,39 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                         self.circuit_recovery_timeout_sec,
                     )
 
+    @staticmethod
+    def _trim_messages_for_retry(
+        messages: list,
+        min_keep: int = 4,
+        drop_fraction: float = 0.5,
+    ) -> list | None:
+        """Return a trimmed copy of messages by dropping the oldest entries.
+
+        Drops up to `drop_fraction` of messages from the front, but never
+        reduces the list below `min_keep` entries. After dropping, advances
+        past any leading ToolMessages so the preserved section always starts
+        with a non-Tool message (prevents orphaned tool responses).
+
+        Returns None when no reduction is possible (list is already at or
+        below min_keep, or all candidates are ToolMessages).
+        """
+        if not messages or len(messages) <= min_keep:
+            return None
+
+        n_to_drop = max(1, int(len(messages) * drop_fraction))
+        n_to_drop = min(n_to_drop, len(messages) - min_keep)
+
+        trimmed = messages[n_to_drop:]
+
+        # Advance past leading ToolMessages to avoid orphaned tool responses
+        while trimmed and getattr(trimmed[0], "type", None) == "tool":
+            trimmed = trimmed[1:]
+
+        if not trimmed or trimmed is messages:
+            return None
+
+        return trimmed
+
     def _classify_error(self, exc: BaseException) -> tuple[bool, str]:
         detail = _extract_error_detail(exc)
         lowered = detail.lower()

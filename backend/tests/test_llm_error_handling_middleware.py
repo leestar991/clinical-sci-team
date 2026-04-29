@@ -13,6 +13,34 @@ from deerflow.agents.middlewares.llm_error_handling_middleware import (
 )
 
 
+class _FakeRequest:
+    """Minimal stand-in for ModelRequest that supports override(messages=...)."""
+
+    def __init__(self, messages: list):
+        self.messages = messages
+
+    def override(self, **kwargs) -> "_FakeRequest":
+        return _FakeRequest(kwargs.get("messages", self.messages))
+
+
+def _human(text="q"):
+    from langchain_core.messages import HumanMessage
+    return HumanMessage(content=text)
+
+
+def _ai(tool_calls=None):
+    from langchain_core.messages import AIMessage
+    msg = AIMessage(content="")
+    if tool_calls:
+        msg.tool_calls = [{"id": tc, "name": "read_file", "args": {}} for tc in tool_calls]
+    return msg
+
+
+def _tool(tool_call_id="c1"):
+    from langchain_core.messages import ToolMessage
+    return ToolMessage(content="result", tool_call_id=tool_call_id)
+
+
 class FakeError(Exception):
     def __init__(
         self,
@@ -533,3 +561,35 @@ async def test_async_circuit_breaker_trips_and_recovers(monkeypatch: pytest.Monk
     assert result.content == "Success"
     assert middleware._circuit_failure_count == 0  # RESET
     assert middleware._check_circuit() is False
+
+
+class TestTrimMessagesForRetry:
+    def test_drops_oldest_messages(self):
+        """Trims roughly half of messages from the front."""
+        msgs = [_human("q1"), _ai(), _human("q2"), _ai(), _human("q3"), _ai()]
+        result = LLMErrorHandlingMiddleware._trim_messages_for_retry(msgs)
+        assert result is not None
+        assert len(result) < len(msgs)
+        assert result[-1] is msgs[-1]
+
+    def test_never_drops_below_min_keep(self):
+        """With very few messages, returns None (can't reduce further)."""
+        msgs = [_human(), _ai()]
+        result = LLMErrorHandlingMiddleware._trim_messages_for_retry(msgs, min_keep=4)
+        assert result is None
+
+    def test_result_never_starts_with_tool_message(self):
+        """After trimming, the first preserved message must not be a ToolMessage."""
+        msgs = [_human("q"), _ai(["c1"]), _tool("c1"), _human("q2"), _ai()]
+        result = LLMErrorHandlingMiddleware._trim_messages_for_retry(msgs, min_keep=3)
+        assert result is not None
+        first_type = getattr(result[0], "type", None)
+        assert first_type != "tool"
+
+    def test_single_pair_below_min_keep_returns_none(self):
+        msgs = [_ai(["c1"]), _tool("c1")]
+        result = LLMErrorHandlingMiddleware._trim_messages_for_retry(msgs, min_keep=4)
+        assert result is None
+
+    def test_empty_messages_returns_none(self):
+        assert LLMErrorHandlingMiddleware._trim_messages_for_retry([]) is None
