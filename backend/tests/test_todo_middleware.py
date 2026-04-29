@@ -300,3 +300,50 @@ class TestAafterModel:
         assert result is not None
         assert result["jump_to"] == "model"
         assert result["messages"][0].name == "todo_completion_reminder"
+
+
+class TestLLMErrorExit:
+    """TodoMiddleware must not force jump when LLM has returned an error."""
+
+    def _error_ai(self, msg="LLM request failed: Error code: 400 - bad request"):
+        return AIMessage(content=msg, tool_calls=[])
+
+    def test_llm_error_content_allows_exit(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [self._error_ai()],
+            "todos": [{"content": "task", "status": "in_progress"}],
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_normal_content_still_injects_reminder(self):
+        mw = TodoMiddleware()
+        state = {
+            "messages": [AIMessage(content="I'm done thinking", tool_calls=[])],
+            "todos": [{"content": "task", "status": "in_progress"}],
+        }
+        result = mw.after_model(state, _make_runtime())
+        assert result is not None
+        assert result["jump_to"] == "model"
+
+    def test_partial_error_string_triggers_exit(self):
+        """Any content containing 'LLM request failed' should be treated as an error."""
+        mw = TodoMiddleware()
+        state = {
+            "messages": [self._error_ai("LLM request failed: Error code: 500 - internal server error")],
+            "todos": [{"content": "task", "status": "pending"}],
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+
+    def test_too_long_message_allows_exit(self):
+        """The new 'too long' message from LLMErrorHandlingMiddleware must also trigger exit."""
+        mw = TodoMiddleware()
+        state = {
+            "messages": [AIMessage(
+                content="The conversation context has grown too long for the current model.",
+                tool_calls=[],
+            )],
+            "todos": [{"content": "task", "status": "in_progress"}],
+        }
+        assert mw.after_model(state, _make_runtime()) is None
+

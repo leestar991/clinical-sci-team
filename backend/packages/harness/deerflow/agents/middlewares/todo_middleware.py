@@ -143,6 +143,12 @@ class TodoMiddleware(TodoListMiddleware):
         if not last_ai or last_ai.tool_calls:
             return None
 
+        # 3. If the last response is an LLM error, allow the agent to exit rather
+        #    than forcing a retry that will keep producing the same 400/500 error.
+        _content = str(getattr(last_ai, "content", ""))
+        if "LLM request failed" in _content or "conversation context has grown too long" in _content:
+            return None
+
         # 3. Allow exit when all todos are completed or there are no todos.
         todos: list[Todo] = state.get("todos") or []  # type: ignore[assignment]
         if not todos or all(t.get("status") == "completed" for t in todos):
