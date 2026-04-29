@@ -17,6 +17,10 @@ class TestSciPptGeneratorMeta:
         assert SCI_PPT_GENERATOR_CONFIG.tools is not None
         assert "read_file" in SCI_PPT_GENERATOR_CONFIG.tools
 
+    def test_present_files_tool_available(self):
+        assert SCI_PPT_GENERATOR_CONFIG.tools is not None
+        assert "present_files" in SCI_PPT_GENERATOR_CONFIG.tools
+
     def test_max_turns_sufficient(self):
         assert SCI_PPT_GENERATOR_CONFIG.max_turns >= 60
 

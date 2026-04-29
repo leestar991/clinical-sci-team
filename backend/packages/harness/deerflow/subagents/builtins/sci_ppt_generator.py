@@ -405,7 +405,7 @@ def box_with_stats(data_dict, output_path, ylabel="Value"):
 7. Proactively inform the user which `slide_type` each slide uses, and offer to regenerate individual slides if needed
 </output_standards>
 """,
-    tools=["read_file", "write_file", "bash", "str_replace"],
+    tools=["read_file", "write_file", "bash", "str_replace", "present_files"],
     disallowed_tools=["task", "ask_clarification"],
     model="claude-opus-4-6",  # Opus: complex multi-skill workflow requires high instruction-following fidelity
     max_turns=80,
