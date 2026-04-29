@@ -601,3 +601,104 @@ class TestTrimMessagesForRetry:
         msgs = [_human("q"), _ai(["c1"]), _tool("c1"), _tool("c2")]
         result = LLMErrorHandlingMiddleware._trim_messages_for_retry(msgs, min_keep=2)
         assert result is None
+
+
+class TestTooLongRetry:
+    """wrap_model_call/awrap_model_call must trim and retry on 'too_long' errors."""
+
+    def _too_long_error(self):
+        return FakeError(
+            "Error code: 400 - {'message': 'Input is too long for requested model.'}",
+            status_code=400,
+        )
+
+    def _make_request(self, n_messages: int = 8):
+        from langchain_core.messages import HumanMessage, AIMessage
+        msgs = []
+        for i in range(n_messages):
+            msgs.append(HumanMessage(content=f"q{i}"))
+            msgs.append(AIMessage(content=f"a{i}"))
+        return _FakeRequest(msgs)
+
+    def test_sync_retries_with_trimmed_request_on_too_long(self, monkeypatch):
+        """wrap_model_call retries once with fewer messages when too_long."""
+        mw = LLMErrorHandlingMiddleware()
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        received_message_counts = []
+
+        def handler(request):
+            received_message_counts.append(len(request.messages))
+            if len(received_message_counts) == 1:
+                raise self._too_long_error()
+            return AIMessage(content="ok")
+
+        request = self._make_request(n_messages=8)
+        result = mw.wrap_model_call(request, handler)
+
+        assert isinstance(result, AIMessage)
+        assert result.content == "ok"
+        assert len(received_message_counts) == 2
+        assert received_message_counts[1] < received_message_counts[0]
+
+    def test_async_retries_with_trimmed_request_on_too_long(self, monkeypatch):
+        """awrap_model_call retries once with fewer messages when too_long."""
+        import asyncio
+        from langchain_core.messages import AIMessage
+
+        mw = LLMErrorHandlingMiddleware()
+
+        async def fake_async_sleep(_):
+            pass
+
+        monkeypatch.setattr("asyncio.sleep", fake_async_sleep)
+
+        received_message_counts = []
+
+        async def handler(request):
+            received_message_counts.append(len(request.messages))
+            if len(received_message_counts) == 1:
+                raise self._too_long_error()
+            return AIMessage(content="async ok")
+
+        request = self._make_request(n_messages=8)
+        result = asyncio.run(mw.awrap_model_call(request, handler))
+
+        assert isinstance(result, AIMessage)
+        assert result.content == "async ok"
+        assert len(received_message_counts) == 2
+        assert received_message_counts[1] < received_message_counts[0]
+
+    def test_sync_returns_error_message_when_trim_does_not_help(self, monkeypatch):
+        """If trimmed retry also fails with too_long, returns user-facing error."""
+        mw = LLMErrorHandlingMiddleware()
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        def handler(request):
+            raise self._too_long_error()
+
+        request = self._make_request(n_messages=8)
+        result = mw.wrap_model_call(request, handler)
+
+        assert isinstance(result, AIMessage)
+        # Must contain the "too long" user message, not the generic LLM error
+        assert "too long" in result.content.lower() or "context" in result.content.lower()
+        assert "LLM request failed" not in result.content
+
+    def test_sync_returns_error_when_too_few_messages_to_trim(self, monkeypatch):
+        """When there are too few messages to trim, returns error immediately."""
+        from langchain_core.messages import HumanMessage, AIMessage
+        mw = LLMErrorHandlingMiddleware()
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        call_count = [0]
+
+        def handler(request):
+            call_count[0] += 1
+            raise self._too_long_error()
+
+        request = _FakeRequest([HumanMessage(content="q"), AIMessage(content="a")])
+        result = mw.wrap_model_call(request, handler)
+
+        assert isinstance(result, AIMessage)
+        assert call_count[0] == 1  # no retry attempted

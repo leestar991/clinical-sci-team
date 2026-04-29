@@ -250,6 +250,14 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
             return "The configured LLM provider is temporarily unavailable after multiple retries. Please wait a moment and continue the conversation."
         return f"LLM request failed: {detail}"
 
+    @staticmethod
+    def _build_too_long_message() -> str:
+        return (
+            "The conversation context has grown too long for the current model. "
+            "The agent was unable to continue even after reducing the context. "
+            "Please start a new conversation or break the task into smaller steps."
+        )
+
     def _emit_retry_event(self, attempt: int, wait_ms: int, reason: str) -> None:
         try:
             from langgraph.config import get_stream_writer
@@ -312,6 +320,22 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 )
                 if retriable:
                     self._record_failure()
+                if reason == "too_long":
+                    trimmed = self._trim_messages_for_retry(request.messages)
+                    if trimmed is not None:
+                        trimmed_request = request.override(messages=trimmed)
+                        logger.info(
+                            "Context too long (%d msgs); retrying with %d msgs",
+                            len(request.messages),
+                            len(trimmed),
+                        )
+                        try:
+                            response = handler(trimmed_request)
+                            self._record_success()
+                            return response
+                        except Exception:
+                            pass
+                    return AIMessage(content=self._build_too_long_message())
                 return AIMessage(content=self._build_user_message(exc, reason))
 
     @override
@@ -358,6 +382,22 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 )
                 if retriable:
                     self._record_failure()
+                if reason == "too_long":
+                    trimmed = self._trim_messages_for_retry(request.messages)
+                    if trimmed is not None:
+                        trimmed_request = request.override(messages=trimmed)
+                        logger.info(
+                            "Context too long (%d msgs); retrying with %d msgs",
+                            len(request.messages),
+                            len(trimmed),
+                        )
+                        try:
+                            response = await handler(trimmed_request)
+                            self._record_success()
+                            return response
+                        except Exception:
+                            pass
+                    return AIMessage(content=self._build_too_long_message())
                 return AIMessage(content=self._build_user_message(exc, reason))
 
 
