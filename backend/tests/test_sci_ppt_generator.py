@@ -1,7 +1,5 @@
 """Tests for sci_ppt_generator SubagentConfig — verifies ppt-generation skill integration."""
 
-import pytest
-
 from deerflow.subagents.builtins.sci_ppt_generator import SCI_PPT_GENERATOR_CONFIG
 
 
