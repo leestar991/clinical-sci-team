@@ -593,3 +593,11 @@ class TestTrimMessagesForRetry:
 
     def test_empty_messages_returns_none(self):
         assert LLMErrorHandlingMiddleware._trim_messages_for_retry([]) is None
+
+    def test_all_remaining_are_tool_messages_returns_none(self):
+        """ToolMessage skipping that exhausts the list must return None."""
+        # After dropping 2 messages (min_keep=2), only ToolMessages remain.
+        # Advancing past them empties the list -> should return None.
+        msgs = [_human("q"), _ai(["c1"]), _tool("c1"), _tool("c2")]
+        result = LLMErrorHandlingMiddleware._trim_messages_for_retry(msgs, min_keep=2)
+        assert result is None
