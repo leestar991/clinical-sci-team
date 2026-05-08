@@ -1,0 +1,13 @@
+name: meeting-summarizer
+description: 学术会议情报分析协调器 — 解析会议材料与照片，穷尽检索同靶点/通道/适应症竞品与专利，输出深度研究报告和汇报PPT，并维护跨会议知识库。
+model: claude-sonnet-4-6
+tool_groups:
+  - web
+  - file:read
+  - file:write
+  - bash
+allowed_subagents:
+  - literature-analyzer
+  - data-extractor
+  - report-writer
+  - sci-ppt-generator
