@@ -41,7 +41,7 @@ def _resolve_model_name(requested_model_name: str | None = None) -> str:
     return default_model_name
 
 
-def _create_summarization_middleware() -> DeerFlowSummarizationMiddleware | None:
+def _create_summarization_middleware(loop_detection: "LoopDetectionMiddleware | None" = None) -> DeerFlowSummarizationMiddleware | None:
     """Create and configure the summarization middleware from config."""
     config = get_summarization_config()
 
@@ -83,6 +83,8 @@ def _create_summarization_middleware() -> DeerFlowSummarizationMiddleware | None
     hooks: list[BeforeSummarizationHook] = []
     if get_memory_config().enabled:
         hooks.append(memory_flush_hook)
+    if loop_detection is not None:
+        hooks.append(loop_detection.make_summarization_hook())
 
     return DeerFlowSummarizationMiddleware(**kwargs, before_summarization=hooks)
 
@@ -225,8 +227,11 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
     """
     middlewares = build_lead_runtime_middlewares(lazy_init=True)
 
+    # Create LoopDetectionMiddleware first so its summarization hook can be wired in
+    loop_detection = LoopDetectionMiddleware()
+
     # Add summarization middleware if enabled
-    summarization_middleware = _create_summarization_middleware()
+    summarization_middleware = _create_summarization_middleware(loop_detection=loop_detection)
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
@@ -266,7 +271,8 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents))
 
     # LoopDetectionMiddleware — detect and break repetitive tool call loops
-    middlewares.append(LoopDetectionMiddleware())
+    # (instance shared with summarization hook above)
+    middlewares.append(loop_detection)
 
     # Inject custom middlewares before ClarificationMiddleware
     if custom_middlewares:

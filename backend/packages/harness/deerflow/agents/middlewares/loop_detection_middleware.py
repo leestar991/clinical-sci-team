@@ -22,7 +22,7 @@ from typing import override
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import RemoveMessage
 from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,11 @@ _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU eviction limit
 _DEFAULT_TOOL_FREQ_WARN = 30  # warn after 30 calls to the same tool type
 _DEFAULT_TOOL_FREQ_HARD_LIMIT = 50  # force-stop after 50 calls to the same tool type
+
+# Per-tool overrides: read_file legitimately requires many calls on large documents
+_DEFAULT_TOOL_FREQ_OVERRIDES: dict[str, tuple[int, int]] = {
+    "read_file": (60, 100),  # (warn, hard_limit)
+}
 
 
 def _normalize_tool_call_args(raw_args: object) -> tuple[dict, str | None]:
@@ -155,6 +160,10 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             Default: 30.
         tool_freq_hard_limit: Number of calls to the same tool type before
             forcing a stop. Default: 50.
+        tool_freq_overrides: Per-tool-name (warn, hard_limit) overrides that
+            take precedence over the global thresholds. Defaults to raising
+            the limits for ``read_file``, which legitimately requires many
+            calls when analyzing large documents.
     """
 
     def __init__(
@@ -165,6 +174,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         max_tracked_threads: int = _DEFAULT_MAX_TRACKED_THREADS,
         tool_freq_warn: int = _DEFAULT_TOOL_FREQ_WARN,
         tool_freq_hard_limit: int = _DEFAULT_TOOL_FREQ_HARD_LIMIT,
+        tool_freq_overrides: dict[str, tuple[int, int]] | None = None,
     ):
         super().__init__()
         self.warn_threshold = warn_threshold
@@ -173,6 +183,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self.max_tracked_threads = max_tracked_threads
         self.tool_freq_warn = tool_freq_warn
         self.tool_freq_hard_limit = tool_freq_hard_limit
+        self.tool_freq_overrides: dict[str, tuple[int, int]] = tool_freq_overrides if tool_freq_overrides is not None else dict(_DEFAULT_TOOL_FREQ_OVERRIDES)
         self._lock = threading.Lock()
         # Per-thread tracking using OrderedDict for LRU eviction
         self._history: OrderedDict[str, list[str]] = OrderedDict()
@@ -280,7 +291,9 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 freq[name] += 1
                 tc_count = freq[name]
 
-                if tc_count >= self.tool_freq_hard_limit:
+                warn_limit, hard_limit = self.tool_freq_overrides.get(name, (self.tool_freq_warn, self.tool_freq_hard_limit))
+
+                if tc_count >= hard_limit:
                     logger.error(
                         "Tool frequency hard limit reached — forcing stop",
                         extra={
@@ -291,7 +304,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                     )
                     return _TOOL_FREQ_HARD_STOP_MSG.format(tool_name=name, count=tc_count), True
 
-                if tc_count >= self.tool_freq_warn:
+                if tc_count >= warn_limit:
                     warned = self._tool_freq_warned[thread_id]
                     if name not in warned:
                         warned.add(name)
@@ -348,21 +361,27 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         warning, hard_stop = self._track_and_check(state, runtime)
 
         if hard_stop:
-            # Strip tool_calls from the last AIMessage to force text output
+            # Strip tool_calls from the last AIMessage to force text output.
+            # RemoveMessage ensures the original AIMessage (with dangling
+            # tool_calls) is dropped so the Anthropic API never sees an
+            # assistant message with tool_calls that lack tool responses.
             messages = state.get("messages", [])
             last_msg = messages[-1]
             content = self._append_text(last_msg.content, warning or _HARD_STOP_MSG)
             stripped_msg = last_msg.model_copy(update=self._build_hard_stop_update(last_msg, content))
-            return {"messages": [stripped_msg]}
+            return {"messages": [RemoveMessage(id=last_msg.id), stripped_msg]}
 
         if warning:
-            # Inject as HumanMessage instead of SystemMessage to avoid
-            # Anthropic's "multiple non-consecutive system messages" error.
-            # Anthropic models require system messages only at the start of
-            # the conversation; injecting one mid-conversation crashes
-            # langchain_anthropic's _format_messages(). HumanMessage works
-            # with all providers. See #1299.
-            return {"messages": [HumanMessage(content=warning)]}
+            # Append warning to the last AIMessage content but KEEP tool_calls
+            # so LangGraph routing still sees them and executes the tools.
+            # RemoveMessage + updated copy replaces the original message
+            # in-place, avoiding the dangling-tool-call corruption that
+            # happened when we injected a separate HumanMessage (#1299).
+            messages = state.get("messages", [])
+            last_msg = messages[-1]
+            content = self._append_text(last_msg.content, warning)
+            updated_msg = last_msg.model_copy(update={"content": content})
+            return {"messages": [RemoveMessage(id=last_msg.id), updated_msg]}
 
         return None
 
@@ -387,3 +406,23 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._warned.clear()
                 self._tool_freq.clear()
                 self._tool_freq_warned.clear()
+
+    def reset_tool_freq(self, thread_id: str) -> None:
+        """Reset per-tool-type frequency counters for a thread.
+
+        Call this when context has been summarized: prior tool calls are now
+        represented in the summary, so frequency counts should restart.
+        """
+        with self._lock:
+            self._tool_freq.pop(thread_id, None)
+            self._tool_freq_warned.pop(thread_id, None)
+        logger.debug("Reset tool frequency tracking after summarization for thread %s", thread_id)
+
+    def make_summarization_hook(self):
+        """Return a BeforeSummarizationHook that resets tool-freq counters on summarization."""
+
+        def _hook(event) -> None:
+            if event.thread_id:
+                self.reset_tool_freq(event.thread_id)
+
+        return _hook

@@ -68,18 +68,21 @@ def generate_image(
     response = requests.post(
         "https://ai-gateway.fosunpharma.com/google/global/gemini-3.1-flash-image-preview",
         headers={
-            "x-goog-api-key": api_key,
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         json={
-            "generationConfig": {"imageConfig": {"aspectRatio": aspect_ratio}},
-            "contents": [{"parts": [*parts, {"text": prompt}]}],
+            "generationConfig": {
+                "responseModalities": ["TEXT", "IMAGE"],
+                "imageConfig": {"aspectRatio": aspect_ratio},
+            },
+            "contents": [{"role": "user", "parts": [*parts, {"text": prompt}]}],
         },
     )
     response.raise_for_status()
     json = response.json()
     parts: list[dict] = json["candidates"][0]["content"]["parts"]
-    image_parts = [part for part in parts if part.get("inlineData", False)]
+    image_parts = [part for part in parts if part.get("inlineData") and not part.get("thought", False)]
     if len(image_parts) == 1:
         base64_image = image_parts[0]["inlineData"]["data"]
         # Save the image to a file

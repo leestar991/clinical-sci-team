@@ -13,6 +13,8 @@ from langgraph.config import get_config
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
 
+_SAFE_CUTOFF_TYPES = frozenset({"human", "system"})
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,6 +90,10 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         if cutoff_index <= 0:
             return None
 
+        cutoff_index = self._safe_cutoff_index(messages, cutoff_index)
+        if cutoff_index <= 0:
+            return None
+
         messages_to_summarize, preserved_messages = self._partition_messages(messages, cutoff_index)
         self._fire_hooks(messages_to_summarize, preserved_messages, runtime)
         summary = self._create_summary(messages_to_summarize)
@@ -113,6 +119,10 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
         if cutoff_index <= 0:
             return None
 
+        cutoff_index = self._safe_cutoff_index(messages, cutoff_index)
+        if cutoff_index <= 0:
+            return None
+
         messages_to_summarize, preserved_messages = self._partition_messages(messages, cutoff_index)
         self._fire_hooks(messages_to_summarize, preserved_messages, runtime)
         summary = await self._acreate_summary(messages_to_summarize)
@@ -125,6 +135,36 @@ class DeerFlowSummarizationMiddleware(SummarizationMiddleware):
                 *preserved_messages,
             ]
         }
+
+    @staticmethod
+    def _safe_cutoff_index(messages: list, cutoff_index: int) -> int:
+        """Adjust cutoff backward to avoid orphaned ToolMessages in preserved section.
+
+        If messages[cutoff_index] is a ToolMessage, or messages[cutoff_index-1] is an
+        AIMessage with tool_calls (whose ToolMessages start at cutoff_index), move the
+        cutoff back to include the whole AI+Tool round-trip in the summarized section.
+        """
+        safe_index = cutoff_index
+        while safe_index > 0:
+            first_preserved = messages[safe_index]
+            msg_type = getattr(first_preserved, "type", None)
+
+            # ToolMessage at boundary means its AIMessage is in the summarize section
+            if msg_type == "tool":
+                safe_index -= 1
+                continue
+
+            # If the message just before the cutoff is an AIMessage with unanswered
+            # tool_calls, moving it into the preserved section keeps the pair intact.
+            if safe_index > 0:
+                prev = messages[safe_index - 1]
+                if getattr(prev, "type", None) == "ai" and getattr(prev, "tool_calls", None):
+                    safe_index -= 1
+                    continue
+
+            break
+
+        return safe_index
 
     def _fire_hooks(
         self,

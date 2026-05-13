@@ -184,3 +184,65 @@ def test_memory_flush_hook_preserves_agent_scoped_memory(monkeypatch: pytest.Mon
 
     queue.add_nowait.assert_called_once()
     assert queue.add_nowait.call_args.kwargs["agent_name"] == "research-agent"
+
+
+# ---------------------------------------------------------------------------
+# _safe_cutoff_index tests
+# ---------------------------------------------------------------------------
+
+
+def _ai_with_tools(*tool_ids: str) -> AIMessage:
+    return AIMessage(content="", tool_calls=[{"id": tid, "name": "read_file", "args": {}} for tid in tool_ids])
+
+
+def _tool_msg(tool_call_id: str) -> object:
+    from langchain_core.messages import ToolMessage
+
+    return ToolMessage(content="result", tool_call_id=tool_call_id)
+
+
+class TestSafeCutoffIndex:
+    def test_no_change_when_first_preserved_is_human(self):
+        """Cutoff at a HumanMessage boundary needs no adjustment."""
+        from langchain_core.messages import HumanMessage
+
+        msgs = [HumanMessage(content="q1"), _ai_with_tools("c1"), _tool_msg("c1"), HumanMessage(content="q2")]
+        # cutoff=3 means preserved starts at HumanMessage("q2")
+        assert DeerFlowSummarizationMiddleware._safe_cutoff_index(msgs, 3) == 3
+
+    def test_tool_message_at_boundary_moves_back_to_ai(self):
+        """If first preserved is a ToolMessage, move cutoff back to the AIMessage."""
+        from langchain_core.messages import HumanMessage
+
+        msgs = [HumanMessage(content="q"), _ai_with_tools("c1", "c2"), _tool_msg("c1"), _tool_msg("c2")]
+        # cutoff=2 means AIMessage is last-to-summarize, ToolMessages are preserved -> bad
+        result = DeerFlowSummarizationMiddleware._safe_cutoff_index(msgs, 2)
+        # Should move back to 1 so AIMessage becomes first preserved
+        assert result == 1
+        assert getattr(msgs[result], "tool_calls", None)  # first preserved is the AIMessage
+
+    def test_ai_with_tool_calls_as_last_summarized_moves_back(self):
+        """If messages[cutoff-1] is AIMessage with tool_calls, move cutoff back."""
+        from langchain_core.messages import HumanMessage
+
+        msgs = [HumanMessage(content="q"), _ai_with_tools("c1"), _tool_msg("c1")]
+        # cutoff=2 means ToolMessage is first preserved but AIMessage is last in summarize
+        result = DeerFlowSummarizationMiddleware._safe_cutoff_index(msgs, 2)
+        assert result == 1
+
+    def test_cutoff_zero_unchanged(self):
+        from langchain_core.messages import HumanMessage
+
+        msgs = [HumanMessage(content="q")]
+        assert DeerFlowSummarizationMiddleware._safe_cutoff_index(msgs, 0) == 0
+
+    def test_multiple_tool_messages_all_move_back(self):
+        """Multiple ToolMessages at boundary: keep walking back past all of them."""
+        from langchain_core.messages import HumanMessage
+
+        msgs = [HumanMessage(content="q"), _ai_with_tools("c1", "c2", "c3"), _tool_msg("c1"), _tool_msg("c2"), _tool_msg("c3")]
+        # Any cutoff inside the tool messages should resolve to index 1
+        for cutoff in (2, 3, 4):
+            result = DeerFlowSummarizationMiddleware._safe_cutoff_index(msgs, cutoff)
+            assert result == 1, f"cutoff={cutoff} should resolve to 1, got {result}"
+
