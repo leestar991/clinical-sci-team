@@ -177,11 +177,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             with contextlib.suppress(asyncio.CancelledError):
                 await monitor_task
 
-        # Stop channel service on shutdown
+        # Stop channel service on shutdown (bounded to prevent worker hang)
         try:
             from app.channels.service import stop_channel_service
 
-            await stop_channel_service()
+            await asyncio.wait_for(
+                stop_channel_service(),
+                timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Channel service shutdown exceeded %.1fs; proceeding with worker exit.",
+                _SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+            )
         except Exception:
             logger.exception("Failed to stop channel service")
 
