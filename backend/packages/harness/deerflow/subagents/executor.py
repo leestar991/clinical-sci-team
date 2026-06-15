@@ -14,8 +14,6 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from langchain.agents import create_agent
 from langchain.tools import BaseTool
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -142,14 +140,107 @@ _background_tasks_lock = threading.Lock()
 # Thread pool for background task scheduling and orchestration
 _scheduler_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-scheduler-")
 
-# Thread pool for actual subagent execution (with timeout support)
-# Larger pool to avoid blocking when scheduler submits execution tasks.
-# Headroom beyond MAX_CONCURRENT_SUBAGENTS=3 allows retries to start while
-# timed-out threads are still draining their cooperative cancellation.
-_execution_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="subagent-exec-")
+# Persistent event loop for isolated subagent executions triggered from an
+# already-running parent loop. Reusing one long-lived loop avoids creating a
+# fresh loop per execution and then closing async resources bound to it.
+_isolated_subagent_loop: asyncio.AbstractEventLoop | None = None
+_isolated_subagent_loop_thread: threading.Thread | None = None
+_isolated_subagent_loop_started: threading.Event | None = None
+_isolated_subagent_loop_lock = threading.Lock()
 
-# Dedicated pool for sync execute() calls made from an already-running event loop.
-_isolated_loop_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="subagent-isolated-")
+
+def _run_isolated_subagent_loop(
+    loop: asyncio.AbstractEventLoop,
+    started_event: threading.Event,
+) -> None:
+    """Run the persistent isolated subagent loop in a dedicated daemon thread."""
+    asyncio.set_event_loop(loop)
+    loop.call_soon(started_event.set)
+    try:
+        loop.run_forever()
+    finally:
+        started_event.clear()
+
+
+def _shutdown_isolated_subagent_loop() -> None:
+    """Stop and close the persistent isolated subagent loop."""
+    global _isolated_subagent_loop, _isolated_subagent_loop_thread, _isolated_subagent_loop_started
+
+    with _isolated_subagent_loop_lock:
+        loop = _isolated_subagent_loop
+        thread = _isolated_subagent_loop_thread
+        _isolated_subagent_loop = None
+        _isolated_subagent_loop_thread = None
+        _isolated_subagent_loop_started = None
+
+    if loop is None:
+        return
+
+    if loop.is_running():
+        loop.call_soon_threadsafe(loop.stop)
+
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=1)
+
+    thread_stopped = thread is None or not thread.is_alive()
+    loop_stopped = not loop.is_running()
+
+    if not loop.is_closed():
+        if thread_stopped and loop_stopped:
+            loop.close()
+        else:
+            logger.warning(
+                "Skipping close of isolated subagent loop because shutdown did not complete within timeout (thread_alive=%s, loop_running=%s)",
+                thread is not None and thread.is_alive(),
+                loop.is_running(),
+            )
+
+
+atexit.register(_shutdown_isolated_subagent_loop)
+
+
+def _get_isolated_subagent_loop() -> asyncio.AbstractEventLoop:
+    """Return the persistent event loop used by isolated subagent executions."""
+    global _isolated_subagent_loop, _isolated_subagent_loop_thread, _isolated_subagent_loop_started
+    with _isolated_subagent_loop_lock:
+        thread_is_alive = _isolated_subagent_loop_thread is not None and _isolated_subagent_loop_thread.is_alive()
+        loop_is_usable = _isolated_subagent_loop is not None and not _isolated_subagent_loop.is_closed() and _isolated_subagent_loop.is_running() and thread_is_alive
+
+        if not loop_is_usable:
+            loop = asyncio.new_event_loop()
+            started_event = threading.Event()
+            thread = threading.Thread(
+                target=_run_isolated_subagent_loop,
+                args=(loop, started_event),
+                name="subagent-persistent-loop",
+                daemon=True,
+            )
+            thread.start()
+            if not started_event.wait(timeout=5):
+                loop.call_soon_threadsafe(loop.stop)
+                thread.join(timeout=1)
+                loop.close()
+                raise RuntimeError("Timed out starting isolated subagent event loop")
+            _isolated_subagent_loop = loop
+            _isolated_subagent_loop_thread = thread
+            _isolated_subagent_loop_started = started_event
+
+        if _isolated_subagent_loop is None:
+            raise RuntimeError("Isolated subagent event loop is not initialized")
+        return _isolated_subagent_loop
+
+
+def _submit_to_isolated_loop_in_context(
+    context: Context,
+    coro_factory: Callable[[], Coroutine[Any, Any, SubagentResult]],
+) -> Future[SubagentResult]:
+    """Submit a coroutine to the isolated loop while preserving ContextVar state."""
+    return context.run(
+        lambda: asyncio.run_coroutine_threadsafe(
+            coro_factory(),
+            _get_isolated_subagent_loop(),
+        )
+    )
 
 
 def _filter_tools(
@@ -235,19 +326,17 @@ class SubagentExecutor:
 
         logger.info(f"[trace={self.trace_id}] SubagentExecutor initialized: {config.name} with {len(self.tools)} tools")
 
-    def _create_agent(self):
-        """Create the agent instance."""
-        model_name = _get_model_name(self.config, self.parent_model)
-        # Subagents run in isolated event loops (asyncio.run() in a thread pool).
-        # Connections with keep-alive persist in the httpx pool after the isolated
-        # loop closes, leaving Transport._loop pointing at the dead loop.  When the
-        # main loop later does pool cleanup (response.aclose()), it hits
-        # "RuntimeError: Event loop is closed".  Disabling keep-alive ensures every
-        # connection is closed immediately after each request, eliminating the leak.
-        _no_keepalive_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_keepalive_connections=0, max_connections=100),
-        )
-        model = create_chat_model(name=model_name, thinking_enabled=False, http_async_client=_no_keepalive_client)
+    def _create_agent(self, tools: list[BaseTool] | None = None, *, deferred_setup: "DeferredToolSetup | None" = None):
+        """Create the agent instance.
+
+        ``deferred_setup`` (assembled in ``_build_initial_state``) carries the
+        deferred MCP tool names + catalog hash so the subagent gets the same
+        DeferredToolFilterMiddleware the lead agent has. ``None`` is a no-op.
+        """
+        app_config = self.app_config or get_app_config()
+        if self.model_name is None:
+            self.model_name = resolve_subagent_model_name(self.config, self.parent_model, app_config=app_config)
+        model = create_chat_model(name=self.model_name, thinking_enabled=False, app_config=app_config)
 
         from deerflow.agents.middlewares.tool_error_handling_middleware import build_subagent_runtime_middlewares
 
@@ -426,12 +515,11 @@ class SubagentExecutor:
             collector_caller = f"subagent:{self.config.name}"
             collector = SubagentTokenCollector(caller=collector_caller)
 
-            # Build config with thread_id for sandbox access and recursion limit.
-            # LangGraph's recursion_limit counts graph node transitions, not LLM calls.
-            # Each agent cycle (LLM → tools → LLM) consumes 2 steps, so we multiply
-            # max_turns by 2 and add 1 to give the final LLM-only step room to finish.
+            # Build config with thread_id for sandbox access and recursion limit
             run_config: RunnableConfig = {
-                "recursion_limit": 2 * self.config.max_turns + 1,
+                "recursion_limit": self.config.max_turns,
+                "callbacks": [collector],
+                "tags": [collector_caller],
             }
             context: dict[str, Any] = {}
             if self.thread_id:
@@ -598,36 +686,19 @@ class SubagentExecutor:
         future: Future[SubagentResult] | None = None
         parent_context = copy_context()
         try:
-            previous_loop = asyncio.get_event_loop()
-        except RuntimeError:
-            previous_loop = None
-
-        # Create and set a new event loop for this thread
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self._aexecute(task, result_holder))
-        finally:
-            try:
-                pending = asyncio.all_tasks(loop)
-                if pending:
-                    for task_obj in pending:
-                        task_obj.cancel()
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-
-                loop.run_until_complete(loop.shutdown_asyncgens())
-                loop.run_until_complete(loop.shutdown_default_executor())
-
-                # Drain any Transport objects that httpx/httpcore left open so their
-                # _loop references are cleared before we call loop.close().  Without
-                # this, the closed-loop Transports stay in the httpx keep-alive pool
-                # and cause "RuntimeError: Event loop is closed" in the main loop
-                # when it later does pool cleanup.  See: _create_agent() comment.
-                async def _drain_transports() -> None:
-                    await asyncio.sleep(0)
-
-                loop.run_until_complete(_drain_transports())
-            except Exception:
+            future = _submit_to_isolated_loop_in_context(
+                parent_context,
+                lambda: self._aexecute(task, result_holder),
+            )
+            return future.result(timeout=self.config.timeout_seconds)
+        except FuturesTimeoutError:
+            if result_holder is not None:
+                result_holder.cancel_event.set()
+            if future is not None:
+                future.cancel()
+            raise
+        except Exception:
+            if future is None:
                 logger.debug(
                     f"[trace={self.trace_id}] Failed to submit subagent {self.config.name} to the isolated event loop",
                     exc_info=True,

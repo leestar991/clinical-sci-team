@@ -5,6 +5,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command
 
+from deerflow.config.agents_config import validate_agent_name
 from deerflow.config.paths import get_paths
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.tools.types import Runtime
@@ -32,6 +33,7 @@ def setup_agent(
     is_new_dir = False
 
     try:
+        agent_name = validate_agent_name(agent_name)
         paths = get_paths()
         if agent_name:
             # Custom agents are persisted under the current user's bucket so
