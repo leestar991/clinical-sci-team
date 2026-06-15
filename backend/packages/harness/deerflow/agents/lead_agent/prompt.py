@@ -181,6 +181,35 @@ Skip simple one-off tasks.
 """
 
 
+def _build_available_subagents_description(available_names: list[str], bash_available: bool, *, app_config: AppConfig | None = None) -> str:
+    """Dynamically build subagent type descriptions from registry.
+
+    Mirrors Codex's pattern where agent_type_description is dynamically generated
+    from all registered roles, so the LLM knows about every available type.
+    """
+    # Built-in descriptions (kept for backward compatibility with existing prompt quality)
+    builtin_descriptions = {
+        "general-purpose": "For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.",
+        "bash": (
+            "For command execution (git, build, test, deploy operations)" if bash_available else "Not available in the current sandbox configuration. Use direct file/web tools or switch to AioSandboxProvider for isolated shell access."
+        ),
+    }
+
+    # Lazy import moved outside loop to avoid repeated import overhead
+    from deerflow.subagents.registry import get_subagent_config
+
+    lines = []
+    for name in available_names:
+        if name in builtin_descriptions:
+            lines.append(f"- **{name}**: {builtin_descriptions[name]}")
+        else:
+            config = get_subagent_config(name, app_config=app_config)
+            if config is not None:
+                desc = config.description.split("\n")[0].strip()  # First line only for brevity
+                lines.append(f"- **{name}**: {desc}")
+
+    return "\n".join(lines)
+
 def _build_available_subagents_text(allowed_subagents: list[str]) -> str:
     """Build the available subagents bullet list from a curated allowed list.
 

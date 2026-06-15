@@ -40,10 +40,8 @@ from deerflow.agents.middlewares.token_usage_middleware import TokenUsageMiddlew
 from deerflow.agents.middlewares.tool_error_handling_middleware import build_lead_runtime_middlewares
 from deerflow.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from deerflow.agents.thread_state import ThreadState
-from deerflow.config.agents_config import load_agent_config
-from deerflow.config.app_config import get_app_config
-from deerflow.config.memory_config import get_memory_config
-from deerflow.config.summarization_config import get_summarization_config
+from deerflow.config.agents_config import load_agent_config, validate_agent_name
+from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.models import create_chat_model
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill
@@ -424,7 +422,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
     subagent_enabled = cfg.get("subagent_enabled", False)
     max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
     is_bootstrap = cfg.get("is_bootstrap", False)
-    agent_name = cfg.get("agent_name")
+    agent_name = validate_agent_name(cfg.get("agent_name"))
 
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
     available_skills = _available_skill_names(agent_config, is_bootstrap)
@@ -466,6 +464,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "is_plan_mode": is_plan_mode,
             "subagent_enabled": subagent_enabled,
             "tool_groups": agent_config.tool_groups if agent_config else None,
+			"available_skills": sorted(available_skills) if available_skills is not None else None,
             "allowed_subagents": agent_config.allowed_subagents if agent_config else None,
         }
     )
@@ -531,7 +530,12 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             deferred_setup=setup,
         ),
         system_prompt=apply_prompt_template(
-            subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name, available_skills=set(agent_config.skills) if agent_config and agent_config.skills is not None else None,
+            subagent_enabled=subagent_enabled,
+            max_concurrent_subagents=max_concurrent_subagents,
+            agent_name=agent_name,
+            available_skills=available_skills,
+            app_config=resolved_app_config,
+            deferred_names=setup.deferred_names,
             allowed_subagents=agent_config.allowed_subagents if agent_config else None,
         ),
         state_schema=ThreadState,

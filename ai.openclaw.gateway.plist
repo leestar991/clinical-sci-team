@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>ai.openclaw.gateway</string>
+    
+    <key>Comment</key>
+    <string>OpenClaw Gateway (v2026.4.2)</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>1</integer>
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/louli/.nvm/versions/node/v22.18.0/bin/node</string>
+      <string>/Users/louli/Documents/aigctools/openclaw/dist/index.js</string>
+      <string>gateway</string>
+      <string>--port</string>
+      <string>18789</string>
+    </array>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/louli/.openclaw/logs/gateway.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/louli/.openclaw/logs/gateway.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+    <key>HOME</key>
+    <string>/Users/louli</string>
+    <key>TMPDIR</key>
+    <string>/var/folders/n5/gkk829p131jg063rtxzsktkc0000gn/T/</string>
+    <key>NODE_EXTRA_CA_CERTS</key>
+    <string>/etc/ssl/cert.pem</string>
+    <key>NODE_USE_SYSTEM_CA</key>
+    <string>1</string>
+    <key>PATH</key>
+    <string>/Users/louli/.nvm/versions/node/v22.18.0/bin:/Users/louli/.local/bin:/Users/louli/.npm-global/bin:/Users/louli/bin:/Users/louli/.volta/bin:/Users/louli/.asdf/shims:/Users/louli/.bun/bin:/Users/louli/Library/Application Support/fnm/aliases/default/bin:/Users/louli/.fnm/aliases/default/bin:/Users/louli/Library/pnpm:/Users/louli/.local/share/pnpm:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>OPENCLAW_GATEWAY_PORT</key>
+    <string>18789</string>
+    <key>OPENCLAW_LAUNCHD_LABEL</key>
+    <string>ai.openclaw.gateway</string>
+    <key>OPENCLAW_SYSTEMD_UNIT</key>
+    <string>openclaw-gateway.service</string>
+    <key>OPENCLAW_WINDOWS_TASK_NAME</key>
+    <string>OpenClaw Gateway</string>
+    <key>OPENCLAW_SERVICE_MARKER</key>
+    <string>openclaw</string>
+    <key>OPENCLAW_SERVICE_KIND</key>
+    <string>gateway</string>
+    <key>OPENCLAW_SERVICE_VERSION</key>
+    <string>2026.4.2</string>
+    </dict>
+  </dict>
+</plist>

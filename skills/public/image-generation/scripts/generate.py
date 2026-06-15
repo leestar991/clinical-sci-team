@@ -232,12 +232,12 @@ def generate_image(
     response = requests.post(
         "https://ai-gateway.fosunpharma.com/google/global/gemini-3.1-flash-image-preview",
         headers={
-            "x-goog-api-key": api_key,
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         json={
             "generationConfig": {"imageConfig": {"aspectRatio": aspect_ratio}},
-            "contents": [{"parts": [*parts, {"text": prompt}]}],
+            "contents": [{"role": "user", "parts": [*parts, {"text": prompt}]}],
         },
     )
     if provider == "minimax":
