@@ -5,16 +5,26 @@ import logging
 import time
 import uuid
 from dataclasses import replace
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
-from langchain.tools import InjectedToolCallId, ToolRuntime, tool
+from langchain.tools import InjectedToolCallId, tool
+from langchain_core.callbacks import BaseCallbackManager
 from langgraph.config import get_stream_writer
-from langgraph.typing import ContextT
 
-from deerflow.agents.thread_state import ThreadState
+from deerflow.config import get_app_config
 from deerflow.sandbox.security import LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE, is_host_bash_allowed
 from deerflow.subagents import SubagentExecutor, get_available_subagent_names, get_subagent_config
-from deerflow.subagents.executor import SubagentStatus, cleanup_background_task, get_background_task_result, request_cancel_background_task
+from deerflow.subagents.config import resolve_subagent_model_name
+from deerflow.subagents.executor import (
+    SubagentStatus,
+    cleanup_background_task,
+    get_background_task_result,
+    request_cancel_background_task,
+)
+from deerflow.tools.types import Runtime
+
+if TYPE_CHECKING:
+    from deerflow.config.app_config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +34,11 @@ SUBAGENT_MAX_RETRIES = 1
 
 @tool("task", parse_docstring=True)
 async def task_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: Runtime,
     description: str,
     prompt: str,
     subagent_type: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    max_turns: int | None = None,
 ) -> str:
     """Delegate a task to a specialized subagent that runs in its own context.
 
@@ -65,12 +74,13 @@ async def task_tool(
         description: A short (3-5 word) description of the task for logging/display. ALWAYS PROVIDE THIS PARAMETER FIRST.
         prompt: The task description for the subagent. Be specific and clear about what needs to be done. ALWAYS PROVIDE THIS PARAMETER SECOND.
         subagent_type: The type of subagent to use. ALWAYS PROVIDE THIS PARAMETER THIRD.
-        max_turns: Optional maximum number of agent turns. Defaults to subagent's configured max.
     """
-    available_subagent_names = get_available_subagent_names()
+    runtime_app_config = _get_runtime_app_config(runtime)
+    cache_token_usage = _token_usage_cache_enabled(runtime_app_config)
+    available_subagent_names = get_available_subagent_names(app_config=runtime_app_config) if runtime_app_config is not None else get_available_subagent_names()
 
     # Get subagent configuration
-    config = get_subagent_config(subagent_type)
+    config = get_subagent_config(subagent_type, app_config=runtime_app_config) if runtime_app_config is not None else get_subagent_config(subagent_type)
     if config is None:
         available = ", ".join(available_subagent_names)
         return f"Error: Unknown subagent type '{subagent_type}'. Available: {available}"
@@ -95,12 +105,6 @@ async def task_tool(
     # each subagent loads its own skills based on config, injected as conversation items).
     # No longer appended to system_prompt here.
 
-    if max_turns is not None:
-        overrides["max_turns"] = max_turns
-
-    if overrides:
-        config = replace(config, **overrides)
-
     # Extract parent context from runtime
     sandbox_state = None
     thread_data = None
@@ -123,26 +127,47 @@ async def task_tool(
         # Get or generate trace_id for distributed tracing
         trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
 
+    parent_available_skills = metadata.get("available_skills")
+    if parent_available_skills is not None:
+        overrides["skills"] = _merge_skill_allowlists(list(parent_available_skills), config.skills)
+
+    if overrides:
+        config = replace(config, **overrides)
+
     # Get available tools (excluding task tool to prevent nesting)
     # Lazy import to avoid circular dependency
     from deerflow.tools import get_available_tools
 
     # Inherit parent agent's tool_groups so subagents respect the same restrictions
     parent_tool_groups = metadata.get("tool_groups")
+    resolved_app_config = runtime_app_config
+    if config.model == "inherit" and parent_model is None and resolved_app_config is None:
+        resolved_app_config = get_app_config()
+    effective_model = resolve_subagent_model_name(config, parent_model, app_config=resolved_app_config)
 
     # Subagents should not have subagent tools enabled (prevent recursive nesting)
-    tools = get_available_tools(model_name=parent_model, groups=parent_tool_groups, subagent_enabled=False)
+    available_tools_kwargs = {
+        "model_name": effective_model,
+        "groups": parent_tool_groups,
+        "subagent_enabled": False,
+    }
+    if resolved_app_config is not None:
+        available_tools_kwargs["app_config"] = resolved_app_config
+    tools = get_available_tools(**available_tools_kwargs)
 
     # Create executor
-    executor = SubagentExecutor(
-        config=config,
-        tools=tools,
-        parent_model=parent_model,
-        sandbox_state=sandbox_state,
-        thread_data=thread_data,
-        thread_id=thread_id,
-        trace_id=trace_id,
-    )
+    executor_kwargs = {
+        "config": config,
+        "tools": tools,
+        "parent_model": parent_model,
+        "sandbox_state": sandbox_state,
+        "thread_data": thread_data,
+        "thread_id": thread_id,
+        "trace_id": trace_id,
+    }
+    if resolved_app_config is not None:
+        executor_kwargs["app_config"] = resolved_app_config
+    executor = SubagentExecutor(**executor_kwargs)
 
     # Start background execution (always async to prevent blocking)
     # Use tool_call_id as task_id for better traceability
@@ -180,11 +205,12 @@ async def task_tool(
                 last_status = result.status
 
             # Check for new AI messages and send task_running events
-            current_message_count = len(result.ai_messages)
+            ai_messages = result.ai_messages or []
+            current_message_count = len(ai_messages)
             if current_message_count > last_message_count:
                 # Send task_running event for each new message
                 for i in range(last_message_count, current_message_count):
-                    message = result.ai_messages[i]
+                    message = ai_messages[i]
                     writer(
                         {
                             "type": "task_running",
@@ -198,8 +224,11 @@ async def task_tool(
                 last_message_count = current_message_count
 
             # Check if task completed, failed, or timed out
+            usage = _summarize_usage(getattr(result, "token_usage_records", None))
             if result.status == SubagentStatus.COMPLETED:
-                writer({"type": "task_completed", "task_id": task_id, "result": result.result})
+                _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
+                _report_subagent_usage(runtime, result)
+                writer({"type": "task_completed", "task_id": task_id, "result": result.result, "usage": usage})
                 logger.info(f"[trace={trace_id}] Task {task_id} completed after {poll_count} polls")
                 cleanup_background_task(task_id)
                 return f"Task Succeeded. Result: {result.result}"
@@ -235,12 +264,16 @@ async def task_tool(
                 logger.error(f"[trace={trace_id}] Task {task_id} failed (no retries left): {result.error}")
                 return f"Task failed. Error: {result.error}"
             elif result.status == SubagentStatus.CANCELLED:
-                writer({"type": "task_cancelled", "task_id": task_id, "error": result.error})
+                _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
+                _report_subagent_usage(runtime, result)
+                writer({"type": "task_cancelled", "task_id": task_id, "error": result.error, "usage": usage})
                 logger.info(f"[trace={trace_id}] Task {task_id} cancelled: {result.error}")
                 cleanup_background_task(task_id)
                 return "Task cancelled by user."
             elif result.status == SubagentStatus.TIMED_OUT:
-                writer({"type": "task_timed_out", "task_id": task_id, "error": result.error})
+                _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
+                _report_subagent_usage(runtime, result)
+                writer({"type": "task_timed_out", "task_id": task_id, "error": result.error, "usage": usage})
                 logger.warning(f"[trace={trace_id}] Task {task_id} timed out: {result.error}")
                 cleanup_background_task(task_id)
                 partial = ""
@@ -268,9 +301,6 @@ async def task_tool(
                 return f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
     except asyncio.CancelledError:
         # Signal the background subagent thread to stop cooperatively.
-        # Without this, the thread (running in ThreadPoolExecutor with its
-        # own event loop via asyncio.run) would continue executing even
-        # after the parent task is cancelled.
         request_cancel_background_task(task_id)
 
         async def cleanup_when_done() -> None:

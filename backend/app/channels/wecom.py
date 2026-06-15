@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from app.channels.base import Channel
+from app.channels.commands import is_known_channel_command
 from app.channels.message_bus import (
     InboundMessageType,
     MessageBus,
@@ -28,6 +29,10 @@ class WeComChannel(Channel):
         self._ws_frames: dict[str, dict[str, Any]] = {}
         self._ws_stream_ids: dict[str, str] = {}
         self._working_message = "Working on it..."
+
+    @property
+    def supports_streaming(self) -> bool:
+        return True
 
     def _clear_ws_context(self, thread_ts: str | None) -> None:
         if not thread_ts:
@@ -266,7 +271,7 @@ class WeComChannel(Channel):
 
         user_id = (body.get("from") or {}).get("userid")
 
-        inbound_type = InboundMessageType.COMMAND if text.startswith("/") else InboundMessageType.CHAT
+        inbound_type = InboundMessageType.COMMAND if is_known_channel_command(text) else InboundMessageType.CHAT
         inbound = self._make_inbound(
             chat_id=user_id,  # keep user's conversation in memory
             user_id=user_id,

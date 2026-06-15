@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
 from datetime import datetime
 
@@ -86,6 +87,106 @@ def _format_container_mount(runtime: str, host_path: str, container_path: str, r
     return ["-v", mount_spec]
 
 
+def _redact_container_command_for_log(cmd: list[str]) -> list[str]:
+    """Return a Docker/Container command with environment values redacted."""
+    redacted: list[str] = []
+    redact_next_env = False
+
+    for arg in cmd:
+        if redact_next_env:
+            if "=" in arg:
+                key = arg.split("=", 1)[0]
+                redacted.append(f"{key}=<redacted>" if key else "<redacted>")
+            else:
+                redacted.append(arg)
+            redact_next_env = False
+            continue
+
+        if arg in {"-e", "--env"}:
+            redacted.append(arg)
+            redact_next_env = True
+            continue
+
+        if arg.startswith("--env="):
+            value = arg.removeprefix("--env=")
+            if "=" in value:
+                key = value.split("=", 1)[0]
+                redacted.append(f"--env={key}=<redacted>" if key else "--env=<redacted>")
+            else:
+                redacted.append(arg)
+            continue
+
+        redacted.append(arg)
+
+    return redacted
+
+
+def _format_container_command_for_log(cmd: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(cmd)
+    return shlex.join(cmd)
+
+
+def _normalize_sandbox_host(host: str) -> str:
+    return host.strip().lower()
+
+
+def _is_ipv6_loopback_sandbox_host(host: str) -> bool:
+    return _normalize_sandbox_host(host) in {"::1", "[::1]"}
+
+
+def _is_loopback_sandbox_host(host: str) -> bool:
+    return _normalize_sandbox_host(host) in {"", "localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def _resolve_docker_bind_host(sandbox_host: str | None = None, bind_host: str | None = None) -> str:
+    """Choose the host interface for legacy Docker ``-p`` sandbox publishing.
+
+    Bare-metal/local runs talk to sandboxes through localhost and should not
+    expose the sandbox HTTP API on every host interface.  Docker-outside-of-
+    Docker deployments commonly use ``host.docker.internal`` from another
+    container; keep their legacy broad bind unless operators opt into a
+    narrower bind with ``DEER_FLOW_SANDBOX_BIND_HOST``.  When operators choose
+    an IPv6 loopback sandbox host, bind Docker to IPv6 loopback as well so the
+    advertised sandbox URL and published socket use the same address family.
+    """
+    explicit_bind = bind_host if bind_host is not None else os.environ.get("DEER_FLOW_SANDBOX_BIND_HOST")
+    if explicit_bind is not None:
+        explicit_bind = explicit_bind.strip()
+        if explicit_bind:
+            logger.debug("Docker sandbox bind: %s (explicit bind host override)", explicit_bind)
+            return explicit_bind
+
+    host = sandbox_host if sandbox_host is not None else os.environ.get("DEER_FLOW_SANDBOX_HOST", "localhost")
+    if _is_ipv6_loopback_sandbox_host(host):
+        logger.debug("Docker sandbox bind: [::1] (IPv6 loopback sandbox host)")
+        return "[::1]"
+    if _is_loopback_sandbox_host(host):
+        logger.debug("Docker sandbox bind: 127.0.0.1 (loopback default)")
+        return "127.0.0.1"
+
+    logger.debug("Docker sandbox bind: 0.0.0.0 (non-loopback sandbox host compatibility)")
+    return "0.0.0.0"
+
+
+def _is_no_such_container_error(stderr: str, container_name: str) -> bool:
+    """Return True only when stderr definitively says the container does not exist.
+
+    Docker reports "No such object" / "No such container". Apple Container
+    reports a generic "not found", so that phrase is only trusted when the
+    message also names the inspected container (or refers to a
+    container/object); transient failures whose text happens to contain
+    "not found" (e.g. "command not found", "context not found") must stay on
+    the raise path instead of being misread as a dead container.
+    """
+    message = stderr.lower()
+    if "no such object" in message or "no such container" in message:
+        return True
+    if "not found" not in message:
+        return False
+    return container_name.lower() in message or "container" in message or "object" in message
+
+
 class LocalContainerBackend(SandboxBackend):
     """Backend that manages sandbox containers locally using Docker or Apple Container.
 
@@ -158,7 +259,7 @@ class LocalContainerBackend(SandboxBackend):
 
     # ── SandboxBackend interface ──────────────────────────────────────────
 
-    def create(self, thread_id: str, sandbox_id: str, extra_mounts: list[tuple[str, str, bool]] | None = None) -> SandboxInfo:
+    def create(self, thread_id: str | None, sandbox_id: str, extra_mounts: list[tuple[str, str, bool]] | None = None) -> SandboxInfo:
         """Start a new container and return its connection info.
 
         Args:
@@ -252,11 +353,21 @@ class LocalContainerBackend(SandboxBackend):
             sandbox_id: The deterministic sandbox ID (determines container name).
 
         Returns:
-            SandboxInfo if container found and healthy, None otherwise.
+            SandboxInfo if container found and healthy, None otherwise. A
+            failed runtime check (e.g. transient daemon error) also returns
+            None — discovery must not adopt a container it cannot verify, and
+            falling through to create keeps acquire recoverable instead of
+            hard-failing on a hiccup.
         """
         container_name = f"{self._container_prefix}-{sandbox_id}"
 
-        if not self._is_container_running(container_name):
+        try:
+            running = self._is_container_running(container_name)
+        except RuntimeError as e:
+            logger.warning(f"Could not verify container {container_name} during discovery; not adopting it: {e}")
+            return None
+
+        if not running:
             return None
 
         port = self._get_container_port(container_name)
@@ -424,12 +535,17 @@ class LocalContainerBackend(SandboxBackend):
         if self._runtime == "docker":
             cmd.extend(["--security-opt", "seccomp=unconfined"])
 
+        if self._runtime == "docker":
+            port_mapping = f"{_resolve_docker_bind_host()}:{port}:8080"
+        else:
+            port_mapping = f"{port}:8080"
+
         cmd.extend(
             [
                 "--rm",
                 "-d",
                 "-p",
-                f"{port}:8080",
+                port_mapping,
                 "--name",
                 container_name,
             ]
@@ -464,7 +580,8 @@ class LocalContainerBackend(SandboxBackend):
 
         cmd.append(self._image)
 
-        logger.info(f"Starting container using {self._runtime}: {' '.join(cmd)}")
+        log_cmd = _format_container_command_for_log(_redact_container_command_for_log(cmd))
+        logger.info(f"Starting container using {self._runtime}: {log_cmd}")
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -493,6 +610,13 @@ class LocalContainerBackend(SandboxBackend):
 
         This enables cross-process container discovery — any process can detect
         containers started by another process via the deterministic container name.
+
+        Raises:
+            RuntimeError: If the container runtime cannot answer the inspect
+                query. A failed check is intentionally distinct from a
+                definitive "container does not exist" result so callers do not
+                destroy healthy containers during transient Docker/Container
+                daemon failures.
         """
         try:
             result = subprocess.run(
@@ -501,9 +625,14 @@ class LocalContainerBackend(SandboxBackend):
                 text=True,
                 timeout=5,
             )
-            return result.returncode == 0 and result.stdout.strip().lower() == "true"
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Timed out checking container {container_name}") from exc
+
+        if result.returncode == 0:
+            return result.stdout.strip().lower() == "true"
+        if _is_no_such_container_error(result.stderr, container_name):
             return False
+        raise RuntimeError(f"Failed to inspect container {container_name}: {result.stderr.strip()}")
 
     def _get_container_port(self, container_name: str) -> int | None:
         """Get the host port of a running container.

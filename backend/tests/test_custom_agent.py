@@ -204,6 +204,79 @@ class TestLoadAgentConfig:
 
 
 # ===========================================================================
+# 3b. resolve_agent_dir — memory-only directory fallback (#3390)
+# ===========================================================================
+
+
+class TestResolveAgentDirMemoryOnlyFallback:
+    """Regression tests for #3390.
+
+    When memory is enabled, the first conversation creates a user-isolated
+    agent directory containing only ``memory.json`` (no ``config.yaml``).
+    On the next turn ``resolve_agent_dir`` must fall through to the legacy
+    shared layout instead of returning the incomplete user directory.
+    """
+
+    def test_user_dir_with_only_memory_falls_back_to_legacy(self, tmp_path):
+        """User dir has memory.json but no config.yaml → use legacy dir."""
+        from deerflow.config.agents_config import resolve_agent_dir
+
+        # Legacy agent with full config
+        legacy_dir = tmp_path / "agents" / "my-agent"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "config.yaml").write_text("name: my-agent\n", encoding="utf-8")
+        (legacy_dir / "SOUL.md").write_text("legacy soul", encoding="utf-8")
+
+        # User dir created by memory write — no config.yaml
+        user_dir = tmp_path / "users" / "u1" / "agents" / "my-agent"
+        user_dir.mkdir(parents=True)
+        (user_dir / "memory.json").write_text("{}", encoding="utf-8")
+
+        with patch("deerflow.config.agents_config.get_paths", return_value=_make_paths(tmp_path)), patch("deerflow.config.agents_config.get_effective_user_id", return_value="u1"):
+            result = resolve_agent_dir("my-agent", user_id="u1")
+
+        assert result == legacy_dir
+
+    def test_user_dir_with_config_takes_priority(self, tmp_path):
+        """User dir with config.yaml should still win over legacy."""
+        from deerflow.config.agents_config import resolve_agent_dir
+
+        # Legacy
+        legacy_dir = tmp_path / "agents" / "my-agent"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "config.yaml").write_text("name: my-agent\n", encoding="utf-8")
+
+        # User dir with full config (migrated)
+        user_dir = tmp_path / "users" / "u1" / "agents" / "my-agent"
+        user_dir.mkdir(parents=True)
+        (user_dir / "config.yaml").write_text("name: my-agent\nmodel: gpt-4\n", encoding="utf-8")
+        (user_dir / "memory.json").write_text("{}", encoding="utf-8")
+
+        with patch("deerflow.config.agents_config.get_paths", return_value=_make_paths(tmp_path)), patch("deerflow.config.agents_config.get_effective_user_id", return_value="u1"):
+            result = resolve_agent_dir("my-agent", user_id="u1")
+
+        assert result == user_dir
+
+    def test_load_config_falls_back_when_user_dir_is_memory_only(self, tmp_path):
+        """End-to-end: load_agent_config works when user dir only has memory.json."""
+        config_dict = {"name": "my-agent", "description": "Legacy agent", "model": "deepseek-v3"}
+        _write_agent(tmp_path, "my-agent", config_dict)
+
+        # Simulate memory write creating user dir without config
+        user_dir = tmp_path / "users" / "u1" / "agents" / "my-agent"
+        user_dir.mkdir(parents=True)
+        (user_dir / "memory.json").write_text("{}", encoding="utf-8")
+
+        with patch("deerflow.config.agents_config.get_paths", return_value=_make_paths(tmp_path)), patch("deerflow.config.agents_config.get_effective_user_id", return_value="u1"):
+            from deerflow.config.agents_config import load_agent_config
+
+            cfg = load_agent_config("my-agent", user_id="u1")
+
+        assert cfg.name == "my-agent"
+        assert cfg.model == "deepseek-v3"
+
+
+# ===========================================================================
 # 4. load_agent_soul
 # ===========================================================================
 
@@ -537,7 +610,10 @@ class TestAgentsAPI:
     def test_create_persists_files_on_disk(self, agent_client, tmp_path):
         agent_client.post("/api/agents", json={"name": "disk-check", "soul": "disk soul"})
 
-        agent_dir = tmp_path / "agents" / "disk-check"
+        # tests/conftest.py installs an autouse fixture that sets the
+        # contextvar to "test-user-autouse", so the agent is persisted under
+        # users/test-user-autouse/agents/ rather than the legacy shared dir.
+        agent_dir = tmp_path / "users" / "test-user-autouse" / "agents" / "disk-check"
         assert agent_dir.exists()
         assert (agent_dir / "config.yaml").exists()
         assert (agent_dir / "SOUL.md").exists()
@@ -545,11 +621,22 @@ class TestAgentsAPI:
 
     def test_delete_removes_files_from_disk(self, agent_client, tmp_path):
         agent_client.post("/api/agents", json={"name": "remove-me", "soul": "bye"})
-        agent_dir = tmp_path / "agents" / "remove-me"
+        agent_dir = tmp_path / "users" / "test-user-autouse" / "agents" / "remove-me"
         assert agent_dir.exists()
 
         agent_client.delete("/api/agents/remove-me")
         assert not agent_dir.exists()
+
+    def test_create_rejects_legacy_name_collision(self, agent_client, tmp_path):
+        """An unmigrated legacy agent must still block name collision so that
+        running the migration script later won't shadow the legacy entry."""
+        legacy_dir = tmp_path / "agents" / "legacy-agent"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "config.yaml").write_text("name: legacy-agent\n", encoding="utf-8")
+        (legacy_dir / "SOUL.md").write_text("legacy soul", encoding="utf-8")
+
+        response = agent_client.post("/api/agents", json={"name": "legacy-agent", "soul": "x"})
+        assert response.status_code == 409
 
 
 # ===========================================================================

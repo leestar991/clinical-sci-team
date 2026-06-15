@@ -12,8 +12,51 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.channels.base import Channel
-from app.channels.message_bus import InboundMessage, InboundMessageType, MessageBus, OutboundMessage, ResolvedAttachment
+from app.channels.message_bus import (
+    PENDING_CLARIFICATION_METADATA_KEY,
+    InboundMessage,
+    InboundMessageType,
+    MessageBus,
+    OutboundMessage,
+    ResolvedAttachment,
+)
 from app.channels.store import ChannelStore
+from deerflow.skills.types import Skill, SkillCategory
+from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY
+
+
+def test_known_channel_command_detection_only_matches_control_commands():
+    from app.channels.commands import is_known_channel_command
+
+    assert is_known_channel_command("/new")
+    assert is_known_channel_command("/HELP now")
+    assert not is_known_channel_command("/mnt/user-data/uploads/report.pdf")
+    assert not is_known_channel_command("/data-analysis analyze uploads/foo.csv")
+    assert not is_known_channel_command(" /new")
+
+
+def _make_channel_skill(tmp_path: Path, name: str, *, enabled: bool = True) -> Skill:
+    skill_dir = tmp_path / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(f"# {name}\n", encoding="utf-8")
+    return Skill(
+        name=name,
+        description=f"Description for {name}",
+        license="MIT",
+        skill_dir=skill_dir,
+        skill_file=skill_file,
+        relative_path=Path(name),
+        category=SkillCategory.CUSTOM,
+        enabled=enabled,
+    )
+
+
+def _make_channel_skill_storage(skills: list[Skill]):
+    return SimpleNamespace(
+        load_skills=lambda *, enabled_only: [skill for skill in skills if skill.enabled] if enabled_only else skills,
+        get_container_root=lambda: "/mnt/skills",
+    )
 
 
 def _run(coro):
@@ -372,6 +415,66 @@ class TestExtractResponseText:
         # Should return "" (no text in current turn), NOT "Hi there!" from previous turn
         assert _extract_response_text(result) == ""
 
+    def test_ignores_hidden_human_control_messages(self):
+        """Hidden control messages should not terminate current-turn response extraction."""
+        from app.channels.manager import _extract_response_text
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "plan this"},
+                {"type": "ai", "content": "Here is the plan."},
+                {
+                    "type": "human",
+                    "name": "todo_reminder",
+                    "content": "keep todos updated",
+                    "additional_kwargs": {"hide_from_ui": True},
+                },
+            ]
+        }
+
+        assert _extract_response_text(result) == "Here is the plan."
+
+
+class TestClarificationDetection:
+    def test_final_clarification_tool_message_is_pending(self):
+        from app.channels.manager import _has_current_turn_clarification
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "deploy"},
+                {"type": "ai", "content": "", "tool_calls": [{"name": "ask_clarification", "args": {}}]},
+                {"type": "tool", "name": "ask_clarification", "content": "Which environment?"},
+            ]
+        }
+        assert _has_current_turn_clarification(result) is True
+
+    def test_clarification_followed_by_regular_ai_is_not_pending(self):
+        from app.channels.manager import _has_current_turn_clarification
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "deploy"},
+                {"type": "ai", "content": "", "tool_calls": [{"name": "ask_clarification", "args": {}}]},
+                {"type": "tool", "name": "ask_clarification", "content": "Which environment?"},
+                {"type": "ai", "content": "I will continue without pending clarification."},
+            ]
+        }
+        assert _has_current_turn_clarification(result) is False
+
+    def test_previous_turn_clarification_does_not_mark_current_turn(self):
+        from app.channels.manager import _has_current_turn_clarification
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "deploy"},
+                {"type": "ai", "content": "", "tool_calls": [{"name": "ask_clarification", "args": {}}]},
+                {"type": "tool", "name": "ask_clarification", "content": "Which environment?"},
+                {"type": "human", "content": "prod"},
+                {"type": "ai", "content": "Deploying to prod."},
+            ]
+        }
+        assert _has_current_turn_clarification(result) is False
+
 
 # ---------------------------------------------------------------------------
 # ChannelManager tests
@@ -414,6 +517,68 @@ def _make_async_iterator(items):
 
 
 class TestChannelManager:
+    def test_get_client_includes_csrf_header_and_cookie(self):
+        from app.channels.manager import ChannelManager
+
+        bus = MessageBus()
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        manager = ChannelManager(bus=bus, store=store, langgraph_url="http://localhost:8001")
+
+        with patch("langgraph_sdk.get_client") as get_client:
+            get_client.return_value = object()
+
+            manager._get_client()
+
+        get_client.assert_called_once()
+        kwargs = get_client.call_args.kwargs
+        assert kwargs["url"] == "http://localhost:8001"
+        headers = kwargs["headers"]
+        csrf_token = headers["X-CSRF-Token"]
+        assert csrf_token
+        assert headers["Cookie"] == f"csrf_token={csrf_token}"
+        assert headers["X-DeerFlow-Internal-Token"]
+
+    def test_fetch_gateway_includes_internal_auth_headers(self, monkeypatch):
+        from app.channels.manager import ChannelManager
+
+        class MockResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"models": [{"name": "default"}]}
+
+        class MockAsyncClient:
+            def __init__(self, *args, **kwargs):
+                return None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+            async def get(self, url, **kwargs):
+                calls.append({"url": url, **kwargs})
+                return MockResponse()
+
+        calls = []
+        monkeypatch.setattr("app.channels.manager.httpx.AsyncClient", MockAsyncClient)
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store, gateway_url="http://gateway:8001")
+
+            reply = await manager._fetch_gateway("/api/models", "models")
+
+            assert reply == "Available models:\n• default"
+            assert calls[0]["url"] == "http://gateway:8001/api/models"
+            assert calls[0]["timeout"] == 10
+            assert calls[0]["headers"]["X-DeerFlow-Internal-Token"]
+
+        _run(go())
+
     def test_handle_chat_calls_channel_receive_file_for_inbound_files(self, monkeypatch):
         from app.channels.manager import ChannelManager
 
@@ -441,6 +606,7 @@ class TestChannelManager:
             )
             mock_channel = MagicMock()
             mock_channel.receive_file = AsyncMock(return_value=modified_msg)
+            mock_channel.supports_streaming = False
             mock_service = MagicMock()
             mock_service.get_channel.return_value = mock_channel
             monkeypatch.setattr("app.channels.service.get_channel_service", lambda: mock_service)
@@ -495,7 +661,7 @@ class TestChannelManager:
             await _wait_for(lambda: len(outbound_received) >= 1)
             await manager.stop()
 
-            # Thread should be created on the LangGraph Server
+            # Thread should be created through Gateway
             mock_client.threads.create.assert_called_once()
 
             # Thread ID should be stored
@@ -508,9 +674,162 @@ class TestChannelManager:
             assert call_args[0][0] == "test-thread-123"  # thread_id
             assert call_args[0][1] == "lead_agent"  # assistant_id
             assert call_args[1]["input"]["messages"][0]["content"] == "hi"
+            assert call_args[1]["config"]["configurable"]["checkpoint_ns"] == ""
+            assert call_args[1]["config"]["configurable"]["thread_id"] == "test-thread-123"
 
             assert len(outbound_received) == 1
             assert outbound_received[0].text == "Hello from agent!"
+
+        _run(go())
+
+    def test_handle_chat_outbound_preserves_inbound_metadata(self):
+        """DingTalk (and similar) need inbound metadata on outbound sends (e.g. sender_staff_id)."""
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            outbound_received: list[OutboundMessage] = []
+
+            async def capture_outbound(msg: OutboundMessage) -> None:
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+            await manager.start()
+
+            meta = {
+                "sender_staff_id": "staff_001",
+                "conversation_type": "1",
+                "conversation_id": "conv_001",
+            }
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="hi",
+                metadata=meta,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert len(outbound_received) == 1
+            assert outbound_received[0].metadata == meta
+
+        _run(go())
+
+    def test_handle_chat_marks_clarification_outbound_metadata(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            outbound_received: list[OutboundMessage] = []
+
+            async def capture_outbound(msg: OutboundMessage) -> None:
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            mock_client = _make_mock_langgraph_client(
+                run_result={
+                    "messages": [
+                        {"type": "human", "content": "deploy"},
+                        {"type": "ai", "content": "", "tool_calls": [{"name": "ask_clarification", "args": {}}]},
+                        {"type": "tool", "name": "ask_clarification", "content": "Which environment?"},
+                    ]
+                }
+            )
+            manager._client = mock_client
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="deploy",
+                metadata={"message_id": "msg-1"},
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert outbound_received[0].text == "Which environment?"
+            assert outbound_received[0].metadata["message_id"] == "msg-1"
+            assert outbound_received[0].metadata[PENDING_CLARIFICATION_METADATA_KEY] is True
+
+        _run(go())
+
+    def test_handle_chat_does_not_mark_regular_outbound_as_clarification(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            outbound_received: list[OutboundMessage] = []
+
+            async def capture_outbound(msg: OutboundMessage) -> None:
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+            await manager.start()
+
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="hi"))
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert outbound_received[0].text == "Hello from agent!"
+            assert PENDING_CLARIFICATION_METADATA_KEY not in outbound_received[0].metadata
+
+        _run(go())
+
+    def test_handle_chat_outbound_drops_large_metadata_keys(self):
+        """Large metadata keys like raw_message should be stripped from outbound messages."""
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            outbound_received: list[OutboundMessage] = []
+
+            async def capture_outbound(msg: OutboundMessage) -> None:
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+            await manager.start()
+
+            meta = {
+                "sender_staff_id": "staff_001",
+                "conversation_type": "1",
+                "raw_message": {"huge": "payload" * 1000},
+                "ref_msg": {"also": "large"},
+            }
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="hi",
+                metadata=meta,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert len(outbound_received) == 1
+            out_meta = outbound_received[0].metadata
+            assert "sender_staff_id" in out_meta
+            assert "conversation_type" in out_meta
+            assert "raw_message" not in out_meta
+            assert "ref_msg" not in out_meta
 
         _run(go())
 
@@ -556,9 +875,132 @@ class TestChannelManager:
             call_args = mock_client.runs.wait.call_args
             assert call_args[0][1] == "lead_agent"
             assert call_args[1]["config"]["recursion_limit"] == 55
+            assert call_args[1]["config"]["configurable"]["checkpoint_ns"] == ""
+            assert call_args[1]["config"]["configurable"]["thread_id"] == "test-thread-123"
             assert call_args[1]["context"]["thinking_enabled"] is False
             assert call_args[1]["context"]["subagent_enabled"] is True
             assert call_args[1]["context"]["agent_name"] == "mobile-agent"
+
+        _run(go())
+
+    def test_clarification_follow_up_preserves_history(self):
+        """Conversation should continue after ask_clarification instead of resetting history."""
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+
+            history_by_checkpoint: dict[tuple[str, str], list[str]] = {}
+
+            async def _runs_wait(thread_id, assistant_id, *, input, config, context, multitask_strategy=None):
+                del assistant_id, context  # unused in this test, kept for signature parity
+
+                checkpoint_ns = config.get("configurable", {}).get("checkpoint_ns")
+                key = (thread_id, str(checkpoint_ns))
+                history = history_by_checkpoint.setdefault(key, [])
+
+                human_text = input["messages"][0]["content"]
+                history.append(human_text)
+
+                if len(history) == 1:
+                    return {
+                        "messages": [
+                            {"type": "human", "content": history[0]},
+                            {
+                                "type": "ai",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "name": "ask_clarification",
+                                        "args": {"question": "Which environment should I use?"},
+                                    }
+                                ],
+                            },
+                            {
+                                "type": "tool",
+                                "name": "ask_clarification",
+                                "content": "Which environment should I use?",
+                            },
+                        ]
+                    }
+
+                if len(history) == 2 and history[0] == "Deploy my app" and history[1] == "prod":
+                    return {
+                        "messages": [
+                            {"type": "human", "content": history[0]},
+                            {
+                                "type": "ai",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "name": "ask_clarification",
+                                        "args": {"question": "Which environment should I use?"},
+                                    }
+                                ],
+                            },
+                            {
+                                "type": "tool",
+                                "name": "ask_clarification",
+                                "content": "Which environment should I use?",
+                            },
+                            {"type": "human", "content": history[1]},
+                            {"type": "ai", "content": "Got it. I will deploy to prod."},
+                        ]
+                    }
+
+                return {
+                    "messages": [
+                        {"type": "human", "content": history[-1]},
+                        {"type": "ai", "content": "History missing; clarification repeated."},
+                    ]
+                }
+
+            mock_client = MagicMock()
+            mock_client.threads.create = AsyncMock(return_value={"thread_id": "clarify-thread-1"})
+            mock_client.threads.get = AsyncMock(return_value={"thread_id": "clarify-thread-1"})
+            mock_client.runs.wait = AsyncMock(side_effect=_runs_wait)
+            manager._client = mock_client
+
+            await manager.start()
+
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel_name="test",
+                    chat_id="chat1",
+                    user_id="user1",
+                    text="Deploy my app",
+                )
+            )
+            await _wait_for(lambda: len(outbound_received) >= 1)
+
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel_name="test",
+                    chat_id="chat1",
+                    user_id="user1",
+                    text="prod",
+                )
+            )
+            await _wait_for(lambda: len(outbound_received) >= 2)
+            await manager.stop()
+
+            assert outbound_received[0].text == "Which environment should I use?"
+            assert outbound_received[1].text == "Got it. I will deploy to prod."
+
+            assert mock_client.runs.wait.call_count == 2
+            first_call = mock_client.runs.wait.call_args_list[0]
+            second_call = mock_client.runs.wait.call_args_list[1]
+            assert first_call.kwargs["config"]["configurable"]["checkpoint_ns"] == ""
+            assert second_call.kwargs["config"]["configurable"]["checkpoint_ns"] == ""
 
         _run(go())
 
@@ -728,6 +1170,67 @@ class TestChannelManager:
 
         _run(go())
 
+    def test_handle_feishu_streaming_marks_only_final_clarification_outbound(self, monkeypatch):
+        from app.channels.manager import ChannelManager
+
+        monkeypatch.setattr("app.channels.manager.STREAM_UPDATE_MIN_INTERVAL_SECONDS", 0.0)
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            outbound_received: list[OutboundMessage] = []
+
+            async def capture_outbound(msg: OutboundMessage) -> None:
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            stream_events = [
+                _make_stream_part(
+                    "messages-tuple",
+                    [
+                        {"id": "ai-1", "content": "Thinking", "type": "AIMessageChunk"},
+                        {"langgraph_node": "agent"},
+                    ],
+                ),
+                _make_stream_part(
+                    "values",
+                    {
+                        "messages": [
+                            {"type": "human", "content": "deploy"},
+                            {"type": "ai", "content": "", "tool_calls": [{"name": "ask_clarification", "args": {}}]},
+                            {"type": "tool", "name": "ask_clarification", "content": "Which environment?"},
+                        ],
+                        "artifacts": [],
+                    },
+                ),
+            ]
+            mock_client = _make_mock_langgraph_client()
+            mock_client.runs.stream = MagicMock(return_value=_make_async_iterator(stream_events))
+            manager._client = mock_client
+            await manager.start()
+
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel_name="feishu",
+                    chat_id="chat1",
+                    user_id="user1",
+                    text="deploy",
+                    thread_ts="om-source-1",
+                )
+            )
+            await _wait_for(lambda: len(outbound_received) >= 2)
+            await manager.stop()
+
+            assert [msg.is_final for msg in outbound_received] == [False, False, True]
+            assert outbound_received[0].text == "Thinking"
+            assert outbound_received[1].text == "Which environment?"
+            assert outbound_received[2].text == "Which environment?"
+            assert all(PENDING_CLARIFICATION_METADATA_KEY not in msg.metadata for msg in outbound_received[:-1])
+            assert outbound_received[-1].metadata[PENDING_CLARIFICATION_METADATA_KEY] is True
+
+        _run(go())
+
     def test_handle_feishu_stream_error_still_sends_final(self, monkeypatch):
         """When the stream raises mid-way, a final outbound with is_final=True must still be published."""
         from app.channels.manager import ChannelManager
@@ -864,6 +1367,496 @@ class TestChannelManager:
             assert len(outbound_received) == 1
             assert "/new" in outbound_received[0].text
             assert "/help" in outbound_received[0].text
+
+        _run(go())
+
+    def test_handle_command_blank_text_is_reported_without_running_agent(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="   ",
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_not_called()
+            assert outbound_received[0].text.startswith("Unknown command.")
+
+        _run(go())
+
+    def test_handle_command_rejects_multi_slash_control_command(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="//help",
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_not_called()
+            assert outbound_received[0].text.startswith("Unknown command: //help.")
+
+        _run(go())
+
+    def test_handle_command_requires_control_command_at_start(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            mock_client = _make_mock_langgraph_client(thread_id="new-thread-456")
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text=" /new",
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.threads.create.assert_not_called()
+            assert store.get_thread_id("test", "chat1") is None
+            assert outbound_received[0].text.startswith("Unknown command: /new.")
+
+        _run(go())
+
+    def test_handle_command_outbound_thread_id_uses_topic_thread(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            store.set_thread_id("test", "chat1", "base-thread")
+            store.set_thread_id("test", "chat1", "topic-thread", topic_id="topic-1")
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="/status",
+                msg_type=InboundMessageType.COMMAND,
+                topic_id="topic-1",
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert outbound_received[0].text == "Active thread: topic-thread"
+            assert outbound_received[0].thread_id == "topic-thread"
+
+        _run(go())
+
+    def test_handle_command_slash_skill_routes_to_chat(self, tmp_path):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            manager._skill_storage = _make_channel_skill_storage([_make_channel_skill(tmp_path, "data-analysis")])
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="/data-analysis analyze uploads/foo.csv",
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_called_once()
+            call_args = mock_client.runs.wait.call_args
+            assert call_args[1]["input"]["messages"][0]["content"] == "/data-analysis analyze uploads/foo.csv"
+            assert outbound_received[0].text == "Hello from agent!"
+
+        _run(go())
+
+    def test_handle_command_slash_skill_with_attachment_preserves_original_content(self, monkeypatch, tmp_path):
+        from app.channels.manager import ChannelManager
+
+        async def fake_ingest(thread_id, msg):
+            return [
+                {
+                    "filename": "report.pdf",
+                    "size": 12,
+                    "path": "/mnt/user-data/uploads/report.pdf",
+                    "is_image": False,
+                }
+            ]
+
+        monkeypatch.setattr("app.channels.manager._ingest_inbound_files", fake_ingest)
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            manager._skill_storage = _make_channel_skill_storage([_make_channel_skill(tmp_path, "data-analysis")])
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            original_text = "/data-analysis analyze report.pdf"
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text=original_text,
+                files=[{"filename": "report.pdf"}],
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_called_once()
+            human_message = mock_client.runs.wait.call_args[1]["input"]["messages"][0]
+            assert human_message["content"].startswith("<uploaded_files>")
+            assert original_text in human_message["content"]
+            assert human_message["additional_kwargs"][ORIGINAL_USER_CONTENT_KEY] == original_text
+            assert outbound_received[0].text == "Hello from agent!"
+
+        _run(go())
+
+    def test_streaming_slash_skill_with_attachment_preserves_original_content(self, monkeypatch, tmp_path):
+        from app.channels.manager import ChannelManager
+
+        async def fake_ingest(thread_id, msg):
+            return [
+                {
+                    "filename": "report.pdf",
+                    "size": 12,
+                    "path": "/mnt/user-data/uploads/report.pdf",
+                    "is_image": False,
+                }
+            ]
+
+        monkeypatch.setattr("app.channels.manager._ingest_inbound_files", fake_ingest)
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            manager._skill_storage = _make_channel_skill_storage([_make_channel_skill(tmp_path, "data-analysis")])
+
+            mock_client = _make_mock_langgraph_client()
+            mock_client.runs.stream = MagicMock(
+                return_value=_make_async_iterator(
+                    [
+                        _make_stream_part(
+                            "values",
+                            {"messages": [{"type": "ai", "content": "streamed response"}]},
+                        )
+                    ]
+                )
+            )
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            original_text = "/data-analysis analyze report.pdf"
+            inbound = InboundMessage(
+                channel_name="feishu",
+                chat_id="chat1",
+                user_id="user1",
+                text=original_text,
+                files=[{"filename": "report.pdf"}],
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: any(message.is_final for message in outbound_received))
+            await manager.stop()
+
+            mock_client.runs.stream.assert_called_once()
+            human_message = mock_client.runs.stream.call_args[1]["input"]["messages"][0]
+            assert human_message["content"].startswith("<uploaded_files>")
+            assert original_text in human_message["content"]
+            assert human_message["additional_kwargs"][ORIGINAL_USER_CONTENT_KEY] == original_text
+
+        _run(go())
+
+    def test_handle_command_slash_skill_requires_command_at_start(self, tmp_path):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            manager._skill_storage = _make_channel_skill_storage([_make_channel_skill(tmp_path, "data-analysis")])
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="  /data-analysis analyze uploads/foo.csv",
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_not_called()
+            assert outbound_received[0].text.startswith("Unknown command: /data-analysis.")
+
+        _run(go())
+
+    def test_handle_command_slash_skill_respects_custom_agent_skill_whitelist(self, monkeypatch, tmp_path):
+        from app.channels.manager import ChannelManager
+
+        monkeypatch.setattr("app.channels.manager.load_agent_config", lambda name: SimpleNamespace(skills=["frontend-design"]))
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(
+                bus=bus,
+                store=store,
+                default_session={"assistant_id": "analyst-agent"},
+            )
+            manager._skill_storage = _make_channel_skill_storage([_make_channel_skill(tmp_path, "data-analysis")])
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="/data-analysis analyze uploads/foo.csv",
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_not_called()
+            assert outbound_received[0].text == "Skill `/data-analysis` is not available for this agent."
+
+        _run(go())
+
+    def test_handle_command_slash_skill_reports_disabled_skill(self, tmp_path):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            manager._skill_storage = _make_channel_skill_storage([_make_channel_skill(tmp_path, "data-analysis", enabled=False)])
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="/data-analysis analyze uploads/foo.csv",
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_not_called()
+            assert outbound_received[0].text == "Skill `/data-analysis` is installed but disabled. Enable it before using slash activation."
+
+        _run(go())
+
+    def test_handle_command_uninstalled_slash_skill_stays_unknown_command(self, tmp_path):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            manager._skill_storage = _make_channel_skill_storage([_make_channel_skill(tmp_path, "frontend-design")])
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="/data-analysis analyze uploads/foo.csv",
+                msg_type=InboundMessageType.COMMAND,
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_not_called()
+            assert outbound_received[0].text.startswith("Unknown command: /data-analysis.")
+
+        _run(go())
+
+    def test_handle_command_slash_skill_resolution_error_is_reported(self, monkeypatch):
+        from app.channels.manager import ChannelManager, SlashSkillCommandResolutionError
+
+        def fail_resolution(text, available_skills=None, storage=None):
+            raise SlashSkillCommandResolutionError("Failed to resolve slash skill command. Please check the skill configuration.")
+
+        monkeypatch.setattr("app.channels.manager._resolve_slash_skill_command", fail_resolution)
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+            store.set_thread_id("test", "chat1", "base-thread")
+            store.set_thread_id("test", "chat1", "topic-thread", topic_id="topic-1")
+
+            mock_client = _make_mock_langgraph_client()
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="test",
+                chat_id="chat1",
+                user_id="user1",
+                text="/data-analysis analyze uploads/foo.csv",
+                msg_type=InboundMessageType.COMMAND,
+                topic_id="topic-1",
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            mock_client.runs.wait.assert_not_called()
+            assert outbound_received[0].text == "Failed to resolve slash skill command. Please check the skill configuration."
+            assert outbound_received[0].thread_id == "topic-thread"
 
         _run(go())
 
@@ -1238,6 +2231,8 @@ class TestChannelManager:
             call_args = mock_client.runs.stream.call_args
 
             assert call_args[1]["input"]["messages"][0]["content"] == "hello"
+            assert call_args[1]["config"]["configurable"]["checkpoint_ns"] == ""
+            assert call_args[1]["config"]["configurable"]["thread_id"] == "test-thread-123"
             assert call_args[1]["context"]["is_bootstrap"] is True
 
             # Final message should be published
@@ -1316,6 +2311,51 @@ class TestChannelManager:
             assert "/bootstrap" in outbound_received[0].text
 
         _run(go())
+
+
+class TestResolveRunParamsUserId:
+    """Regression for PR #3294: channel identity must reach ``run_context``
+    while staying safe for user-scoped filesystem buckets.
+    """
+
+    def _manager(self):
+        from app.channels.manager import ChannelManager
+
+        bus = MessageBus()
+        store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+        return ChannelManager(bus=bus, store=store)
+
+    def test_safe_user_id_is_passed_through(self):
+        manager = self._manager()
+        msg = InboundMessage(channel_name="telegram", chat_id="c", user_id="123456", text="hi")
+
+        _, _, run_context = manager._resolve_run_params(msg, "thread-1")
+
+        assert run_context["user_id"] == "123456"
+        assert run_context["channel_user_id"] == "123456"
+
+    def test_unsafe_user_id_is_normalized_but_raw_preserved(self):
+        from deerflow.config.paths import make_safe_user_id
+
+        manager = self._manager()
+        raw = "user@example.com"
+        msg = InboundMessage(channel_name="feishu", chat_id="c", user_id=raw, text="hi")
+
+        _, _, run_context = manager._resolve_run_params(msg, "thread-1")
+
+        assert run_context["user_id"] == make_safe_user_id(raw)
+        assert run_context["user_id"] != raw
+        assert run_context["channel_user_id"] == raw
+
+    @pytest.mark.parametrize("raw_user_id", ["", None])
+    def test_empty_or_none_user_id_is_not_injected(self, raw_user_id):
+        manager = self._manager()
+        msg = InboundMessage(channel_name="feishu", chat_id="c", user_id=raw_user_id, text="hi")
+
+        _, _, run_context = manager._resolve_run_params(msg, "thread-1")
+
+        assert "user_id" not in run_context
+        assert "channel_user_id" not in run_context
 
 
 # ---------------------------------------------------------------------------
@@ -1404,6 +2444,31 @@ class TestExtractArtifacts:
             ]
         }
         assert _extract_artifacts(result) == ["/mnt/user-data/outputs/a.txt", "/mnt/user-data/outputs/b.csv"]
+
+    def test_ignores_hidden_human_control_messages(self):
+        """Hidden control messages should not hide current-turn present_files artifacts."""
+        from app.channels.manager import _extract_artifacts
+
+        result = {
+            "messages": [
+                {"type": "human", "content": "export"},
+                {
+                    "type": "ai",
+                    "content": "Done.",
+                    "tool_calls": [
+                        {"name": "present_files", "args": {"filepaths": ["/mnt/user-data/outputs/plan.md"]}},
+                    ],
+                },
+                {
+                    "type": "human",
+                    "name": "todo_completion_reminder",
+                    "content": "mark tasks complete",
+                    "additional_kwargs": {"hide_from_ui": True},
+                },
+            ]
+        }
+
+        assert _extract_artifacts(result) == ["/mnt/user-data/outputs/plan.md"]
 
 
 class TestFormatArtifactText:
@@ -1514,6 +2579,50 @@ class TestHandleChatWithArtifacts:
             assert outbound_received[0].text != "(No response from agent)"
             assert "output.csv" in outbound_received[0].text
             assert outbound_received[0].artifacts == ["/mnt/user-data/outputs/output.csv"]
+
+        _run(go())
+
+    def test_hidden_human_control_message_does_not_trigger_no_response_fallback(self):
+        """Plan-mode hidden control messages should not mask the final AI response."""
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            run_result = {
+                "messages": [
+                    {"type": "human", "content": "make a plan"},
+                    {"type": "ai", "content": "Here is a concrete plan."},
+                    {
+                        "type": "human",
+                        "name": "todo_reminder",
+                        "content": "sync todos",
+                        "additional_kwargs": {"hide_from_ui": True},
+                    },
+                ]
+            }
+            mock_client = _make_mock_langgraph_client(run_result=run_result)
+            manager._client = mock_client
+
+            outbound_received = []
+            bus.subscribe_outbound(lambda msg: outbound_received.append(msg))
+            await manager.start()
+
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel_name="test",
+                    chat_id="c1",
+                    user_id="u1",
+                    text="make a plan",
+                )
+            )
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert len(outbound_received) == 1
+            assert outbound_received[0].text == "Here is a concrete plan."
 
         _run(go())
 
@@ -1649,7 +2758,8 @@ class TestFeishuChannel:
         async def go():
             bus = MessageBus()
             bus.publish_inbound = AsyncMock()
-            channel = FeishuChannel(bus, config={})
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            channel = FeishuChannel(bus, config={"channel_store": store})
             channel._api_client = MagicMock()
 
             reply_started = asyncio.Event()
@@ -1685,6 +2795,11 @@ class TestFeishuChannel:
                         text="Hello",
                         is_final=False,
                         thread_ts="om-source-msg",
+                        metadata={
+                            "user_id": "user-1",
+                            "root_id": "om-root-msg",
+                            "topic_id": "om-root-msg",
+                        },
                     )
                 )
             )
@@ -1699,6 +2814,9 @@ class TestFeishuChannel:
             assert channel._reply_card.await_count == 1
             channel._update_card.assert_awaited_once_with("om-running-card", "Hello")
             assert "om-source-msg" not in channel._running_card_tasks
+            assert store.get_thread_id("feishu", "chat-1", topic_id="om-source-msg") == "thread-1"
+            assert store.get_thread_id("feishu", "chat-1", topic_id="om-running-card") == "thread-1"
+            assert store.get_thread_id("feishu", "chat-1", topic_id="om-root-msg") == "thread-1"
 
         _run(go())
 
@@ -1848,6 +2966,36 @@ class TestWeComChannel:
 
         _run(go())
 
+    def test_publish_ws_inbound_treats_slash_prefixed_paths_as_chat(self, monkeypatch):
+        from app.channels.wecom import WeComChannel
+
+        async def go():
+            bus = MessageBus()
+            bus.publish_inbound = AsyncMock()
+            channel = WeComChannel(bus, config={})
+            channel._ws_client = SimpleNamespace(reply_stream=AsyncMock())
+
+            monkeypatch.setitem(
+                __import__("sys").modules,
+                "aibot",
+                SimpleNamespace(generate_req_id=lambda prefix: "stream-1"),
+            )
+
+            frame = {
+                "body": {
+                    "msgid": "msg-1",
+                    "from": {"userid": "user-1"},
+                }
+            }
+
+            await channel._publish_ws_inbound(frame, "/mnt/user-data/uploads/report.pdf")
+
+            inbound = bus.publish_inbound.await_args.args[0]
+            assert inbound.text == "/mnt/user-data/uploads/report.pdf"
+            assert inbound.msg_type == InboundMessageType.CHAT
+
+        _run(go())
+
     def test_on_outbound_sends_attachment_before_clearing_context(self, tmp_path):
         from app.channels.wecom import WeComChannel
 
@@ -1987,29 +3135,249 @@ class TestChannelService:
     def test_service_urls_fall_back_to_env(self, monkeypatch):
         from app.channels.service import ChannelService
 
-        monkeypatch.setenv("DEER_FLOW_CHANNELS_LANGGRAPH_URL", "http://langgraph:2024")
+        monkeypatch.setenv("DEER_FLOW_CHANNELS_LANGGRAPH_URL", "http://gateway:8001/api")
         monkeypatch.setenv("DEER_FLOW_CHANNELS_GATEWAY_URL", "http://gateway:8001")
 
         service = ChannelService(channels_config={})
 
-        assert service.manager._langgraph_url == "http://langgraph:2024"
+        assert service.manager._langgraph_url == "http://gateway:8001/api"
         assert service.manager._gateway_url == "http://gateway:8001"
 
     def test_config_service_urls_override_env(self, monkeypatch):
         from app.channels.service import ChannelService
 
-        monkeypatch.setenv("DEER_FLOW_CHANNELS_LANGGRAPH_URL", "http://langgraph:2024")
+        monkeypatch.setenv("DEER_FLOW_CHANNELS_LANGGRAPH_URL", "http://gateway:8001/api")
         monkeypatch.setenv("DEER_FLOW_CHANNELS_GATEWAY_URL", "http://gateway:8001")
 
         service = ChannelService(
             channels_config={
-                "langgraph_url": "http://custom-langgraph:2024",
+                "langgraph_url": "http://custom-gateway:8001/api",
                 "gateway_url": "http://custom-gateway:8001",
             }
         )
 
-        assert service.manager._langgraph_url == "http://custom-langgraph:2024"
+        assert service.manager._langgraph_url == "http://custom-gateway:8001/api"
         assert service.manager._gateway_url == "http://custom-gateway:8001"
+
+    def test_from_app_config_uses_explicit_config(self):
+        from app.channels.service import ChannelService
+
+        app_config = SimpleNamespace(
+            model_extra={
+                "channels": {
+                    "telegram": {"enabled": False},
+                }
+            }
+        )
+
+        with patch("deerflow.config.app_config.get_app_config", side_effect=AssertionError("should not read global config")):
+            service = ChannelService.from_app_config(app_config)
+
+        assert service._config == {"telegram": {"enabled": False}}
+
+    def test_disabled_channel_with_string_creds_emits_warning(self, caplog):
+        """Warning is emitted when a channel has string credentials but enabled=false."""
+        import logging
+
+        from app.channels.service import ChannelService
+
+        async def go():
+            service = ChannelService(
+                channels_config={
+                    "wecom": {"enabled": False, "bot_id": "corp123", "bot_secret": "secret"},
+                }
+            )
+            with caplog.at_level(logging.WARNING, logger="app.channels.service"):
+                await service.start()
+            await service.stop()
+
+        _run(go())
+        assert any("wecom" in r.message and r.levelno == logging.WARNING for r in caplog.records)
+
+    def test_disabled_channel_with_int_creds_emits_warning(self, caplog):
+        """Warning is emitted even when YAML-parsed integer credentials are present."""
+        import logging
+
+        from app.channels.service import ChannelService
+
+        async def go():
+            # Simulate YAML parsing a numeric token/ID as an int
+            service = ChannelService(
+                channels_config={
+                    "telegram": {"enabled": False, "bot_token": 123456789},
+                }
+            )
+            with caplog.at_level(logging.WARNING, logger="app.channels.service"):
+                await service.start()
+            await service.stop()
+
+        _run(go())
+        assert any("telegram" in r.message and r.levelno == logging.WARNING for r in caplog.records)
+
+    def test_disabled_channel_without_creds_emits_info(self, caplog):
+        """Only an info log (no warning) is emitted when a channel is disabled with no credentials."""
+        import logging
+
+        from app.channels.service import ChannelService
+
+        async def go():
+            service = ChannelService(
+                channels_config={
+                    "telegram": {"enabled": False},
+                }
+            )
+            with caplog.at_level(logging.DEBUG, logger="app.channels.service"):
+                await service.start()
+            await service.stop()
+
+        _run(go())
+        warning_records = [r for r in caplog.records if "telegram" in r.message and r.levelno == logging.WARNING]
+        assert not warning_records
+
+    # -- restart_channel config reload tests (issue #3497) --
+
+    def test_restart_channel_reloads_config_from_disk(self, monkeypatch):
+        """restart_channel reads the latest config via get_app_config()."""
+        from app.channels.service import ChannelService
+
+        initial_config = {"feishu": {"enabled": True, "app_id": "old_id", "app_secret": "old_secret"}}
+        updated_config = {"feishu": {"enabled": True, "app_id": "new_id", "app_secret": "new_secret"}}
+
+        service = ChannelService(channels_config=initial_config)
+
+        def mock_get_app_config():
+            return SimpleNamespace(model_extra={"channels": updated_config})
+
+        monkeypatch.setattr("deerflow.config.app_config.get_app_config", mock_get_app_config)
+
+        started_configs = {}
+
+        async def mock_start_channel(name, config):
+            started_configs[name] = config
+            return True
+
+        service._start_channel = mock_start_channel
+
+        async def go():
+            await service.restart_channel("feishu")
+
+        _run(go())
+
+        assert started_configs["feishu"]["app_id"] == "new_id"
+        assert started_configs["feishu"]["app_secret"] == "new_secret"
+        assert service._config["feishu"]["app_id"] == "new_id"
+
+    def test_restart_channel_falls_back_to_cached_config_on_error(self, monkeypatch):
+        """When get_app_config() fails, restart_channel uses cached config."""
+        from app.channels.service import ChannelService
+
+        cached_config = {"feishu": {"enabled": True, "app_id": "cached_id", "app_secret": "cached_secret"}}
+        service = ChannelService(channels_config=cached_config)
+
+        def _raise():
+            raise RuntimeError("config missing")
+
+        monkeypatch.setattr("deerflow.config.app_config.get_app_config", _raise)
+
+        started_configs = {}
+
+        async def mock_start_channel(name, config):
+            started_configs[name] = config
+            return True
+
+        service._start_channel = mock_start_channel
+
+        async def go():
+            await service.restart_channel("feishu")
+
+        _run(go())
+
+        assert started_configs["feishu"]["app_id"] == "cached_id"
+
+    def test_restart_channel_returns_false_for_unknown_channel(self):
+        """restart_channel returns False when the channel has no config."""
+        from app.channels.service import ChannelService
+
+        service = ChannelService(channels_config={})
+
+        async def go():
+            result = await service.restart_channel("nonexistent")
+            assert result is False
+
+        _run(go())
+
+    def test_restart_channel_stops_existing_channel_before_restart(self):
+        """restart_channel stops the running channel instance before restarting."""
+        from app.channels.service import ChannelService
+
+        service = ChannelService(channels_config={"feishu": {"enabled": True, "app_id": "x", "app_secret": "y"}})
+
+        stopped = []
+
+        class FakeChannel:
+            is_running = True
+
+            async def stop(self):
+                stopped.append(True)
+
+        service._channels["feishu"] = FakeChannel()
+
+        started_configs = {}
+
+        async def mock_start_channel(name, config):
+            started_configs[name] = config
+            return True
+
+        service._start_channel = mock_start_channel
+
+        async def go():
+            await service.restart_channel("feishu")
+
+        _run(go())
+
+        assert stopped
+        assert "feishu" in started_configs
+
+    def test_restart_channel_skips_disabled_channel(self, monkeypatch):
+        """restart_channel stops the channel and returns True when config has enabled: false."""
+        from app.channels.service import ChannelService
+
+        service = ChannelService(channels_config={"feishu": {"enabled": True, "app_id": "x", "app_secret": "y"}})
+
+        stopped = []
+
+        class FakeChannel:
+            is_running = True
+
+            async def stop(self):
+                stopped.append(True)
+
+        service._channels["feishu"] = FakeChannel()
+
+        # Simulate config.yaml updated to enabled: false
+        disabled_config = {"feishu": {"enabled": False, "app_id": "x", "app_secret": "y"}}
+
+        def mock_get_app_config():
+            return SimpleNamespace(model_extra={"channels": disabled_config})
+
+        monkeypatch.setattr("deerflow.config.app_config.get_app_config", mock_get_app_config)
+
+        started = []
+
+        async def mock_start_channel(name, config):
+            started.append(name)
+            return True
+
+        service._start_channel = mock_start_channel
+
+        async def go():
+            result = await service.restart_channel("feishu")
+            assert result is True  # successfully stopped (no restart needed)
+
+        _run(go())
+
+        assert stopped  # old channel was stopped
+        assert not started  # _start_channel was NOT called
 
 
 # ---------------------------------------------------------------------------
@@ -2046,6 +3414,11 @@ class TestSlackSendRetry:
 
 
 class TestSlackAllowedUsers:
+    @staticmethod
+    def _submit_coro(coro, loop):
+        coro.close()
+        return MagicMock()
+
     def test_numeric_allowed_users_match_string_event_user_id(self):
         from app.channels.slack import SlackChannel
 
@@ -2067,13 +3440,9 @@ class TestSlackAllowedUsers:
             "ts": "1710000000.000100",
         }
 
-        def submit_coro(coro, loop):
-            coro.close()
-            return MagicMock()
-
         with patch(
             "app.channels.slack.asyncio.run_coroutine_threadsafe",
-            side_effect=submit_coro,
+            side_effect=self._submit_coro,
         ) as submit:
             channel._handle_message_event(event)
 
@@ -2084,6 +3453,287 @@ class TestSlackAllowedUsers:
         assert inbound.user_id == "123456"
         assert inbound.chat_id == "C123"
         assert inbound.text == "hello from slack"
+
+    def test_string_allowed_users_match_event_user_id(self):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        channel = SlackChannel(
+            bus=bus,
+            config={"allowed_users": "U123456"},
+        )
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        event = {
+            "user": "U123456",
+            "text": "hello from slack",
+            "channel": "C123",
+            "ts": "1710000000.000100",
+        }
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ) as submit:
+            channel._handle_message_event(event)
+
+        channel._add_reaction.assert_called_once_with("C123", "1710000000.000100", "eyes")
+        channel._send_running_reply.assert_called_once_with("C123", "1710000000.000100")
+        submit.assert_called_once()
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert inbound.user_id == "U123456"
+        assert inbound.chat_id == "C123"
+        assert inbound.text == "hello from slack"
+
+    def test_app_mention_strips_leading_bot_mention_before_command_detection(self):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        channel = SlackChannel(bus=bus, config={"bot_user_id": "UBOT"})
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        event = {
+            "type": "app_mention",
+            "user": "U123456",
+            "text": "<@UBOT> /help",
+            "channel": "C123",
+            "ts": "1710000000.000100",
+        }
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ):
+            channel._handle_message_event(event)
+
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert inbound.text == "/help"
+        assert inbound.msg_type == InboundMessageType.COMMAND
+
+    def test_app_mention_strips_labelled_leading_bot_mention(self):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        channel = SlackChannel(bus=bus, config={"bot_user_id": "UBOT"})
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        event = {
+            "type": "app_mention",
+            "user": "U123456",
+            "text": "<@UBOT|deerflow> /help",
+            "channel": "C123",
+            "ts": "1710000000.000100",
+        }
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ):
+            channel._handle_message_event(event)
+
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert inbound.text == "/help"
+        assert inbound.msg_type == InboundMessageType.COMMAND
+
+    def test_app_mention_strips_leading_bot_mention_before_slash_skill(self):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        channel = SlackChannel(bus=bus, config={"bot_user_id": "UBOT"})
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        event = {
+            "type": "app_mention",
+            "user": "U123456",
+            "text": "<@UBOT> /data-analysis analyze uploads/foo.csv",
+            "channel": "C123",
+            "ts": "1710000000.000100",
+        }
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ):
+            channel._handle_message_event(event)
+
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert inbound.text == "/data-analysis analyze uploads/foo.csv"
+        assert inbound.msg_type == InboundMessageType.CHAT
+
+    def test_app_mention_preserves_following_user_mention(self):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        channel = SlackChannel(bus=bus, config={"bot_user_id": "UBOT"})
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        event = {
+            "type": "app_mention",
+            "user": "U123456",
+            "text": "<@UBOT> <@UASSIGNEE> please review this",
+            "channel": "C123",
+            "ts": "1710000000.000100",
+        }
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ):
+            channel._handle_message_event(event)
+
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert inbound.text == "<@UASSIGNEE> please review this"
+        assert inbound.msg_type == InboundMessageType.CHAT
+
+    def test_app_mention_preserves_leading_non_bot_mention_when_bot_id_known(self):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        channel = SlackChannel(bus=bus, config={"bot_user_id": "UBOT"})
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        event = {
+            "type": "app_mention",
+            "user": "U123456",
+            "text": "<@UASSIGNEE> <@UBOT> please review this",
+            "channel": "C123",
+            "ts": "1710000000.000100",
+        }
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ):
+            channel._handle_message_event(event)
+
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert inbound.text == "<@UASSIGNEE> <@UBOT> please review this"
+        assert inbound.msg_type == InboundMessageType.CHAT
+
+    def test_app_mention_preserves_leading_non_bot_mention_when_bot_id_unknown(self):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        channel = SlackChannel(bus=bus, config={})
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        event = {
+            "type": "app_mention",
+            "user": "U123456",
+            "text": "<@UASSIGNEE> /help <@UBOT>",
+            "channel": "C123",
+            "ts": "1710000000.000100",
+        }
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ):
+            channel._handle_message_event(event)
+
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert inbound.text == "<@UASSIGNEE> /help <@UBOT>"
+        assert inbound.msg_type == InboundMessageType.CHAT
+
+    def test_socket_event_resolves_bot_user_id_before_app_mention_command_detection(self):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        channel = SlackChannel(bus=bus, config={})
+        channel._SocketModeResponse = lambda envelope_id: SimpleNamespace(envelope_id=envelope_id)
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        client = SimpleNamespace(send_socket_mode_response=MagicMock())
+        req = SimpleNamespace(
+            envelope_id="env-1",
+            type="events_api",
+            payload={
+                "authorizations": [{"user_id": "UBOT"}],
+                "event": {
+                    "type": "app_mention",
+                    "user": "U123456",
+                    "text": "<@UBOT> /help",
+                    "channel": "C123",
+                    "ts": "1710000000.000100",
+                },
+            },
+        )
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ):
+            channel._on_socket_event(client, req)
+
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert channel._bot_user_id == "UBOT"
+        assert inbound.text == "/help"
+        assert inbound.msg_type == InboundMessageType.COMMAND
+
+    def test_scalar_allowed_users_warns_and_matches_stringified_event_user_id(self, caplog):
+        from app.channels.slack import SlackChannel
+
+        bus = MessageBus()
+        bus.publish_inbound = AsyncMock()
+        with caplog.at_level("WARNING"):
+            channel = SlackChannel(
+                bus=bus,
+                config={"allowed_users": 123456},
+            )
+        channel._loop = MagicMock()
+        channel._loop.is_running.return_value = True
+        channel._add_reaction = MagicMock()
+        channel._send_running_reply = MagicMock()
+
+        event = {
+            "user": "123456",
+            "text": "hello from slack",
+            "channel": "C123",
+            "ts": "1710000000.000100",
+        }
+
+        with patch(
+            "app.channels.slack.asyncio.run_coroutine_threadsafe",
+            side_effect=self._submit_coro,
+        ) as submit:
+            channel._handle_message_event(event)
+
+        assert "Slack allowed_users should be a list" in caplog.text
+        submit.assert_called_once()
+        inbound = bus.publish_inbound.call_args.args[0]
+        assert inbound.user_id == "123456"
 
     def test_raises_after_all_retries_exhausted(self):
         from app.channels.slack import SlackChannel
@@ -2125,6 +3775,86 @@ class TestSlackAllowedUsers:
 
 
 class TestTelegramSendRetry:
+    def test_start_registers_known_channel_commands(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        from app.channels.commands import KNOWN_CHANNEL_COMMANDS
+        from app.channels.telegram import TelegramChannel
+
+        class FakeFilter:
+            def __init__(self, expr: str):
+                self.expr = expr
+
+            def __and__(self, other):
+                return FakeFilter(f"{self.expr}&{other.expr}")
+
+            def __invert__(self):
+                return FakeFilter(f"~{self.expr}")
+
+        class FakeApplication:
+            def __init__(self):
+                self.handlers = []
+
+            def add_handler(self, handler):
+                self.handlers.append(handler)
+
+        fake_app = FakeApplication()
+
+        class FakeApplicationBuilder:
+            def token(self, token):
+                assert token == "test-token"
+                return self
+
+            def build(self):
+                return fake_app
+
+        def fake_command_handler(command, callback):
+            return SimpleNamespace(kind="command", command=command, callback=callback)
+
+        def fake_message_handler(filter_expr, callback):
+            return SimpleNamespace(kind="message", filter_expr=filter_expr, callback=callback)
+
+        telegram_mod = ModuleType("telegram")
+        telegram_ext_mod = ModuleType("telegram.ext")
+        telegram_ext_mod.ApplicationBuilder = FakeApplicationBuilder
+        telegram_ext_mod.CommandHandler = fake_command_handler
+        telegram_ext_mod.MessageHandler = fake_message_handler
+        telegram_ext_mod.filters = SimpleNamespace(TEXT=FakeFilter("TEXT"), COMMAND=FakeFilter("COMMAND"))
+        telegram_mod.ext = telegram_ext_mod
+        monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
+        monkeypatch.setitem(sys.modules, "telegram.ext", telegram_ext_mod)
+
+        class FakeThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                return None
+
+        monkeypatch.setattr("app.channels.telegram.threading.Thread", FakeThread)
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+
+            await ch.start()
+            try:
+                registered_commands = {handler.command for handler in fake_app.handlers if handler.kind == "command"}
+                expected_commands = {command.removeprefix("/") for command in KNOWN_CHANNEL_COMMANDS}
+                assert expected_commands <= registered_commands
+                assert "start" in registered_commands
+                message_filters = {handler.filter_expr.expr for handler in fake_app.handlers if handler.kind == "message"}
+                assert {"TEXT&COMMAND", "TEXT&~COMMAND"} <= message_filters
+            finally:
+                await ch.stop()
+
+        _run(go())
+
     def test_retries_on_failure_then_succeeds(self):
         from app.channels.telegram import TelegramChannel
 
@@ -2248,6 +3978,47 @@ class TestTelegramPrivateChatThread:
 
         _run(go())
 
+    def test_private_chat_slash_skill_text_routes_as_chat(self):
+        from app.channels.telegram import TelegramChannel
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_event_loop()
+
+            update = _make_telegram_update("private", message_id=12, text="/data-analysis analyze uploads/foo.csv")
+            await ch._on_text(update, None)
+
+            msg = await asyncio.wait_for(bus.get_inbound(), timeout=2)
+            assert msg.text == "/data-analysis analyze uploads/foo.csv"
+            assert msg.msg_type == InboundMessageType.CHAT
+            assert msg.topic_id is None
+
+        _run(go())
+
+    def test_slash_skill_addressed_to_telegram_bot_strips_username(self):
+        from app.channels.telegram import TelegramChannel
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_event_loop()
+
+            update = _make_telegram_update(
+                "group",
+                message_id=13,
+                text="/data-analysis@DeerFlowBot analyze uploads/foo.csv",
+            )
+            context = SimpleNamespace(bot=SimpleNamespace(username="DeerFlowBot"))
+            await ch._on_text(update, context)
+
+            msg = await asyncio.wait_for(bus.get_inbound(), timeout=2)
+            assert msg.text == "/data-analysis analyze uploads/foo.csv"
+            assert msg.msg_type == InboundMessageType.CHAT
+            assert msg.topic_id == "13"
+
+        _run(go())
+
     def test_private_chat_with_reply_still_uses_none_topic(self):
         from app.channels.telegram import TelegramChannel
 
@@ -2359,6 +4130,25 @@ class TestTelegramPrivateChatThread:
 
             msg = await asyncio.wait_for(bus.get_inbound(), timeout=2)
             assert msg.topic_id == "20"
+            assert msg.msg_type == InboundMessageType.COMMAND
+
+        _run(go())
+
+    def test_cmd_generic_strips_addressed_telegram_bot_username(self):
+        from app.channels.telegram import TelegramChannel
+
+        async def go():
+            bus = MessageBus()
+            ch = TelegramChannel(bus=bus, config={"bot_token": "test-token"})
+            ch._main_loop = asyncio.get_event_loop()
+
+            update = _make_telegram_update("group", message_id=33, text="/status@DeerFlowBot")
+            context = SimpleNamespace(bot=SimpleNamespace(username="DeerFlowBot"))
+            await ch._cmd_generic(update, context)
+
+            msg = await asyncio.wait_for(bus.get_inbound(), timeout=2)
+            assert msg.text == "/status"
+            assert msg.topic_id == "33"
             assert msg.msg_type == InboundMessageType.COMMAND
 
         _run(go())
