@@ -13,6 +13,41 @@ class ThreadDataState(TypedDict):
     outputs_path: NotRequired[str | None]
 
 
+def merge_sandbox(existing: SandboxState | None, new: SandboxState | None) -> SandboxState | None:
+    """Reducer for sandbox state - keeps the last non-None value.
+
+    Required because parallel tool calls (via LangGraph Send fan-out) can
+    each trigger lazy sandbox initialization in the same step, producing
+    multiple writes to this channel.  Without a reducer the default
+    LastValue channel raises InvalidUpdateError on the second write.
+    """
+    if new is None:
+        return existing
+    return new
+
+
+def merge_thread_data(existing: ThreadDataState | None, new: ThreadDataState | None) -> ThreadDataState | None:
+    """Reducer for thread_data state - keeps the last non-None value.
+
+    Prevents potential InvalidUpdateError if multiple nodes write
+    thread_data in the same step.
+    """
+    if new is None:
+        return existing
+    return new
+
+
+def merge_title(existing: str | None, new: str | None) -> str | None:
+    """Reducer for title state - keeps the last non-None value.
+
+    Prevents potential InvalidUpdateError if multiple nodes write
+    title in the same step.
+    """
+    if new is None:
+        return existing
+    return new
+
+
 class ViewedImageData(TypedDict):
     base64: str
     mime_type: str
@@ -85,9 +120,9 @@ def merge_promoted(existing: PromotedTools | None, new: PromotedTools | None) ->
 
 
 class ThreadState(AgentState):
-    sandbox: NotRequired[SandboxState | None]
-    thread_data: NotRequired[ThreadDataState | None]
-    title: NotRequired[str | None]
+    sandbox: Annotated[SandboxState | None, merge_sandbox]
+    thread_data: Annotated[ThreadDataState | None, merge_thread_data]
+    title: Annotated[str | None, merge_title]
     artifacts: Annotated[list[str], merge_artifacts]
     todos: Annotated[list | None, merge_todos]
     uploaded_files: NotRequired[list[dict] | None]
