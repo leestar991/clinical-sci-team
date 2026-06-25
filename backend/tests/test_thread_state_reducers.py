@@ -7,15 +7,49 @@ overwrites the previously accumulated value.
 
 from typing import get_type_hints
 
+import pytest
+
 from deerflow.agents.thread_state import (
     ThreadState,
     merge_artifacts,
     merge_sandbox,
-    merge_thread_data,
-    merge_title,
     merge_todos,
     merge_viewed_images,
 )
+
+
+class TestMergeSandbox:
+    """Reducer for ThreadState.sandbox - allows idempotent concurrent writes."""
+
+    def test_none_new_preserves_existing(self):
+        existing = {"sandbox_id": "sandbox-1"}
+        assert merge_sandbox(existing, None) == existing
+
+    def test_none_existing_accepts_new(self):
+        new = {"sandbox_id": "sandbox-1"}
+        assert merge_sandbox(None, new) == new
+
+    def test_same_sandbox_id_is_idempotent(self):
+        existing = {"sandbox_id": "sandbox-1"}
+        new = {"sandbox_id": "sandbox-1"}
+        assert merge_sandbox(existing, new) == existing
+
+    def test_both_none_sandbox_id_is_idempotent(self):
+        existing = {"sandbox_id": None}
+        new = {"sandbox_id": None}
+        assert merge_sandbox(existing, new) == existing
+
+    def test_omitted_sandbox_id_is_idempotent(self):
+        """An omitted sandbox_id represents uninitialized sandbox state."""
+        existing = {}
+        new = {}
+        assert merge_sandbox(existing, new) == existing
+
+    def test_conflicting_sandbox_ids_raise(self):
+        existing = {"sandbox_id": "sandbox-1"}
+        new = {"sandbox_id": "sandbox-2"}
+        with pytest.raises(ValueError, match="Conflicting sandbox state updates"):
+            merge_sandbox(existing, new)
 
 
 class TestMergeTodos:
@@ -73,76 +107,6 @@ class TestMergeViewedImages:
         assert merge_viewed_images(existing, {}) == {}
 
 
-class TestMergeSandbox:
-    """Reducer for ThreadState.sandbox - keeps last non-None value.
-
-    Regression coverage for concurrent sandbox writes during parallel
-    tool execution via LangGraph Send fan-out.
-    """
-
-    def test_new_value_overrides_existing(self):
-        existing = {"sandbox_id": "local:thread-1"}
-        new = {"sandbox_id": "local:thread-2"}
-        assert merge_sandbox(existing, new) == new
-
-    def test_none_new_preserves_existing(self):
-        existing = {"sandbox_id": "local:thread-1"}
-        assert merge_sandbox(existing, None) == existing
-
-    def test_none_existing_accepts_new(self):
-        new = {"sandbox_id": "local:thread-1"}
-        assert merge_sandbox(None, new) == new
-
-    def test_both_none_returns_none(self):
-        assert merge_sandbox(None, None) is None
-
-    def test_idempotent_writes(self):
-        """Multiple parallel tool calls writing the same sandbox_id must not conflict."""
-        existing = {"sandbox_id": "local:thread-1"}
-        new = {"sandbox_id": "local:thread-1"}
-        assert merge_sandbox(existing, new) == existing
-
-
-class TestMergeThreadData:
-    """Reducer for ThreadState.thread_data - keeps last non-None value."""
-
-    def test_new_value_overrides_existing(self):
-        existing = {"workspace_path": "/old", "uploads_path": "/old/up", "outputs_path": "/old/out"}
-        new = {"workspace_path": "/new", "uploads_path": "/new/up", "outputs_path": "/new/out"}
-        assert merge_thread_data(existing, new) == new
-
-    def test_none_new_preserves_existing(self):
-        existing = {"workspace_path": "/path", "uploads_path": "/up", "outputs_path": "/out"}
-        assert merge_thread_data(existing, None) == existing
-
-    def test_none_existing_accepts_new(self):
-        new = {"workspace_path": "/path", "uploads_path": "/up", "outputs_path": "/out"}
-        assert merge_thread_data(None, new) == new
-
-    def test_both_none_returns_none(self):
-        assert merge_thread_data(None, None) is None
-
-
-class TestMergeTitle:
-    """Reducer for ThreadState.title - keeps last non-None value."""
-
-    def test_new_value_overrides_existing(self):
-        assert merge_title("old title", "new title") == "new title"
-
-    def test_none_new_preserves_existing(self):
-        assert merge_title("existing title", None) == "existing title"
-
-    def test_none_existing_accepts_new(self):
-        assert merge_title(None, "new title") == "new title"
-
-    def test_both_none_returns_none(self):
-        assert merge_title(None, None) is None
-
-    def test_empty_string_is_explicit(self):
-        """An empty string is a valid explicit title (not None)."""
-        assert merge_title("old", "") == ""
-
-
 class TestThreadStateAnnotations:
     """Regression guards: ensure reducer wiring on ThreadState fields.
 
@@ -163,20 +127,6 @@ class TestThreadStateAnnotations:
         sandbox_hint = hints["sandbox"]
         assert hasattr(sandbox_hint, "__metadata__"), "ThreadState.sandbox must be Annotated with a reducer"
         assert merge_sandbox in sandbox_hint.__metadata__, "ThreadState.sandbox must be wired to merge_sandbox reducer"
-
-    def test_thread_data_field_is_wired_to_merge_thread_data(self):
-        """ThreadState.thread_data must use merge_thread_data."""
-        hints = get_type_hints(ThreadState, include_extras=True)
-        hint = hints["thread_data"]
-        assert hasattr(hint, "__metadata__"), "ThreadState.thread_data must be Annotated with a reducer"
-        assert merge_thread_data in hint.__metadata__, "ThreadState.thread_data must be wired to merge_thread_data reducer"
-
-    def test_title_field_is_wired_to_merge_title(self):
-        """ThreadState.title must use merge_title."""
-        hints = get_type_hints(ThreadState, include_extras=True)
-        hint = hints["title"]
-        assert hasattr(hint, "__metadata__"), "ThreadState.title must be Annotated with a reducer"
-        assert merge_title in hint.__metadata__, "ThreadState.title must be wired to merge_title reducer"
 
     def test_todos_field_is_wired_to_merge_todos(self):
         """ThreadState.todos must use merge_todos.
