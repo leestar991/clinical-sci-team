@@ -16,10 +16,17 @@ def _get_tavily_client() -> TavilyClient:
 
 @tool("web_search", parse_docstring=True)
 def web_search_tool(query: str) -> str:
-    """Search the web.
+    """Search the web for current, up-to-date information using Tavily Search API.
+
+    This is the PRIMARY tool for ALL web research tasks. Use it INSTEAD of writing
+    Python scripts or using bash to call search engines. It returns structured
+    results with titles, URLs, and content snippets from across the internet.
+
+    Supported search types: news, general web, academic content.
+    For ANY question requiring online information, use this tool first.
 
     Args:
-        query: The query to search for.
+        query: The search query string. Be specific and include relevant keywords.
     """
     config = get_app_config().get_tool_config("web_search")
     max_results = 5
@@ -43,6 +50,9 @@ def web_search_tool(query: str) -> str:
 @tool("web_fetch", parse_docstring=True)
 def web_fetch_tool(url: str) -> str:
     """Fetch the contents of a web page at a given URL.
+    PREFER web_fetch over bash curl/requests: web_fetch provides readability
+    extraction, handles authentication gracefully, and respects content limits.
+    Use web_fetch for ALL web page fetching — do NOT use bash curl/requests.
     Only fetch EXACT URLs that have been provided directly by the user or have been returned in results from the web_search and web_fetch tools.
     This tool can NOT access content that requires authentication, such as private Google Docs or pages behind login walls.
     Do NOT add www. to URLs that do NOT have them.

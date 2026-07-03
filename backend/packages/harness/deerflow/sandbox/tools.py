@@ -1421,6 +1421,27 @@ def _truncate_ls_output(output: str, max_chars: int) -> str:
 def bash_tool(runtime: Runtime, description: str, command: str) -> str:
     """Execute a bash command in a Linux environment.
 
+    IMPORTANT — bash operates in a LOCAL SANDBOX with NO internet access. It CANNOT:
+    - Search the web → use `web_search` instead
+    - Fetch web pages → use `web_fetch` instead
+    - Access any network resources or external APIs
+
+    bash is designed for LOCAL operations only:
+    - Running Python scripts and installing packages
+    - File system operations (move, copy, delete, permission changes)
+    - Building, compiling, testing code
+    - Data processing and analysis with local tools
+
+    ANTI-PATTERNS — DO NOT use bash for:
+    - Searching the web → use `web_search` (NOT curl/wget/python requests)
+    - Fetching web pages → use `web_fetch` (NOT curl/wget/python requests)
+    - Reading files → use `read_file` (NOT cat)
+    - Listing directories → use `ls` (NOT ls in bash)
+    - Searching file contents → use `grep` (NOT grep in bash)
+    - Finding files → use `glob` (NOT find in bash)
+    - Editing files → use `str_replace` or `write_file` (NOT sed/awk/echo)
+    If a dedicated tool exists for the task, use it. Writing Python scripts or
+    shell pipelines to replicate a tool's functionality is wasteful and wrong.
 
     - Use `python` to run Python code.
     - Prefer a thread-local virtual environment in `/mnt/user-data/workspace/.venv`.
@@ -1740,6 +1761,11 @@ def read_file_tool(
 ) -> str:
     """Read the contents of a text file. Use this to examine source code, configuration files, logs, or any text-based file.
 
+    PREFER read_file over bash cat/head/tail: read_file handles virtual path
+    resolution, provides line-range selection, and detects binary files.
+    Use read_file for all text file reading — only fall back to bash for
+    binary file inspection or when you need text processing pipelines (awk, sed).
+
     Args:
         description: Explain why you are reading this file in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the file to read.
@@ -1772,8 +1798,9 @@ def read_file_tool(
     except UnicodeDecodeError:
         return (
             f"Error: cannot read '{requested_path}' as text — it appears to be a binary file "
-            "(e.g. .xlsx, .pdf, or an image). read_file only supports UTF-8 text. Use bash with a "
-            "suitable library instead (pandas/openpyxl for spreadsheets), or view_image for images."
+            "(e.g. .xlsx, .pdf, or an image). read_file only supports UTF-8 text. "
+            "Use view_image for images, or use bash ONLY if you need to inspect raw bytes "
+            "(xxd, hexdump) or process binary formats with specialized tools."
         )
     except Exception as e:
         return f"Error: Unexpected error reading file: {_sanitize_error(e, runtime)}"
@@ -1819,11 +1846,16 @@ def write_file_tool(
 ) -> str:
     """Write text content to a file. By default this overwrites the target file; set append=True to add content to the end without replacing existing content.
 
-    READ-BEFORE-WRITE (issue #3857): if the target file already exists (including
+READ-BEFORE-WRITE (issue #3857): if the target file already exists (including
     append=True), you must have read its CURRENT version with read_file first.
     Any write invalidates earlier reads, so re-read between consecutive
     modifications — a ranged read of the relevant section is enough. Writes
     that fail this check are rejected with an error.
+
+    PREFER write_file over bash heredoc/echo: write_file handles path resolution,
+    creates intermediate directories automatically, and avoids shell escaping issues.
+    Always use write_file for creating/updating files — only fall back to bash for
+    binary file manipulation or edge cases write_file cannot handle.
 
     SIZE POLICY (issue #3189):
     A single non-append write_file call must not exceed 80 KB of UTF-8 content.
