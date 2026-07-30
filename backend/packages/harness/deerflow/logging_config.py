@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+import time
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from deerflow.config.app_config import apply_logging_level
 from deerflow.trace_context import get_current_trace_id
@@ -14,6 +16,29 @@ DEFAULT_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 TRACE_TEXT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - [trace_id=%(trace_id)s] - %(message)s"
 _TRACE_FILTER_NAME = "deerflow_trace_context_filter"
+
+# Log timestamps are emitted in UTC+8 (Asia/Shanghai) regardless of the host
+# system timezone, so logs are unambiguous and match the deployment's wall clock.
+# Setting ``logging.Formatter.converter`` (a ``time.localtime``-compatible
+# callable) makes ``%(asctime)s`` use this timezone; the JSON formatter formats
+# ``record.created`` with the same ZoneInfo for consistency.
+_LOG_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _log_time_tuple(timestamp: float) -> time.struct_time:
+    """``time.localtime``-compatible converter yielding a UTC+8 struct_time."""
+    return datetime.fromtimestamp(timestamp, _LOG_TIMEZONE).timetuple()
+
+
+# Apply the UTC+8 converter to every Formatter this module creates. Setting it
+# on the base class covers both the default and trace formatters (and any
+# third-party formatters that inherit from ``logging.Formatter``), so ``%(asctime)s``
+# is consistently UTC+8 without relying on the host ``TZ`` environment variable.
+#
+# ``converter`` is looked up as ``self.converter`` in ``Formatter.formatTime``, so a
+# plain function assigned to the class would bind as a method (receiving ``self`` as
+# an extra arg). Wrap it in ``staticmethod`` to keep the ``time.localtime`` signature.
+logging.Formatter.converter = staticmethod(_log_time_tuple)
 
 
 class TraceContextFilter(logging.Filter):
@@ -35,7 +60,7 @@ class JsonTraceFormatter(logging.Formatter):
         if not hasattr(record, "trace_id"):
             record.trace_id = get_current_trace_id() or "-"
         payload: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(record.created, UTC).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, _LOG_TIMEZONE).isoformat(),
             "logger": record.name,
             "level": record.levelname,
             "trace_id": record.trace_id,
