@@ -1,8 +1,8 @@
 """Configuration for stream bridge."""
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 StreamBridgeType = Literal["memory", "redis"]
 
@@ -12,16 +12,43 @@ class StreamBridgeConfig(BaseModel):
 
     type: StreamBridgeType = Field(
         default="memory",
-        description="Stream bridge backend type. 'memory' uses in-process asyncio.Queue (single-process only). 'redis' uses Redis Streams (planned for Phase 2, not yet implemented).",
+        description=("Stream bridge backend type. 'memory' uses in-process asyncio.Queue (single-process only). 'redis' uses Redis Streams for cross-pod shared event delivery; requires namespace to be set."),
     )
     redis_url: str | None = Field(
         default=None,
-        description="Redis URL for the redis stream bridge type. Example: 'redis://localhost:6379/0'.",
+        description="Redis URL when type='redis'. Example: 'redis://localhost:6379/0'.",
+    )
+    namespace: str | None = Field(
+        default=None,
+        description=(
+            "REQUIRED when type='redis'; ignored otherwise. Used as the key "
+            "namespace for stream isolation across tenants/environments. "
+            "Stream key derives to '{namespace}:deerflow:stream:{run_id}'. "
+            "Examples: 'prod-cellflow', 'staging-team-a'. Empty/whitespace "
+            "values are rejected at config-load time."
+        ),
     )
     queue_maxsize: int = Field(
         default=256,
-        description="Maximum number of events buffered per run in the memory bridge.",
+        description="Approximate per-run buffer size (XADD MAXLEN ~ N).",
     )
+    publish_max_connections: int = Field(
+        default=16,
+        description=("Redis connection pool size for XADD/EVALSHA (short calls). Sizing: >= max(2, peak_concurrent_workers_per_pod / 2)."),
+    )
+    subscribe_max_connections: int = Field(
+        default=256,
+        description=(
+            "Redis connection pool size for XREAD BLOCK (each subscriber holds one connection for the SSE duration). Strict admission: requests beyond this cap return HTTP 503 + Retry-After: 5. Sizing: >= peak_concurrent_sse_per_pod * 1.2."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_redis_namespace(self) -> Self:
+        if self.type == "redis":
+            if self.namespace is None or not self.namespace.strip():
+                raise ValueError("stream_bridge.namespace is required when type='redis' and must be a non-empty string. Set a value like 'prod-cellflow' to isolate stream keys.")
+        return self
 
 
 # Global configuration instance — None means no stream bridge is configured

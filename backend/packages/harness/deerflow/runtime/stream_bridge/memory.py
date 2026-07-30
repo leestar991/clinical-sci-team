@@ -116,6 +116,14 @@ class MemoryStreamBridge(StreamBridge):
         async with stream.condition:
             next_offset = self._resolve_start_offset(stream, last_event_id)
 
+        # ─── PRIME HEARTBEAT（与 RedisStreamBridge 对称的契约要求）─────────
+        # subscribe_with_prime() at the route layer awaits the first yield to
+        # decide whether to construct StreamingResponse; without an immediate
+        # synthetic heartbeat, idle runs would block response headers for up
+        # to `heartbeat_interval` (default 15s). MemoryStreamBridge must
+        # honour the same contract so backend-agnostic plumbing stays sound.
+        yield HEARTBEAT_SENTINEL
+
         while True:
             async with stream.condition:
                 if next_offset < stream.start_offset:
@@ -145,9 +153,29 @@ class MemoryStreamBridge(StreamBridge):
                 return
             yield entry
 
-    async def cleanup(self, run_id: str, *, delay: float = 0) -> None:
+    async def cleanup(
+        self,
+        run_id: str,
+        *,
+        delay: float = 0,
+        escalate_on_failure: bool = False,
+    ) -> None:
+        # escalate_on_failure is a Redis-only concern; ignored for memory backend.
+        del escalate_on_failure
         if delay > 0:
-            await asyncio.sleep(delay)
+            # T10: worker now `await bridge.cleanup(...)` to make cleanup
+            # failures observable on the Redis path. Memory would block the
+            # caller for ``delay`` seconds if we slept here, so schedule the
+            # actual pop on a fire-and-forget task and return immediately.
+            # The pop still happens after ``delay`` seconds, preserving the
+            # original grace-period semantics for late subscribers.
+            async def _delayed_pop() -> None:
+                await asyncio.sleep(delay)
+                self._streams.pop(run_id, None)
+                self._counters.pop(run_id, None)
+
+            asyncio.create_task(_delayed_pop())
+            return
         self._streams.pop(run_id, None)
         self._counters.pop(run_id, None)
 

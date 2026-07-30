@@ -61,12 +61,46 @@ class StreamBridge(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def cleanup(self, run_id: str, *, delay: float = 0) -> None:
+    async def cleanup(
+        self,
+        run_id: str,
+        *,
+        delay: float = 0,
+        escalate_on_failure: bool = False,
+    ) -> None:
         """Release resources associated with *run_id*.
 
         If *delay* > 0 the implementation should wait before releasing,
         giving late subscribers a chance to drain remaining events.
+
+        *escalate_on_failure* is meaningful only for backend implementations
+        that can fail at the wire level (e.g. Redis). When True, the
+        implementation should escalate (EXPIRE → UNLINK → terminal_leak
+        metric) and never raise. MemoryStreamBridge ignores this flag.
         """
 
     async def close(self) -> None:
         """Release backend resources.  Default is a no-op."""
+
+
+class SubscriberLimitExceeded(Exception):
+    """Raised by RedisStreamBridge.subscribe() when the per-pod subscriber
+    semaphore is at capacity. Gateway maps this to HTTP 503 + Retry-After: 5.
+    MemoryStreamBridge never raises this.
+    """
+
+
+class TerminalExpireFailed(Exception):
+    """Raised by RedisStreamBridge.publish_end() when the XADD succeeded but
+    EXPIRE failed (e.g. Redis OOM-evict). Caller MUST trigger
+    bridge.cleanup(delay=300, escalate_on_failure=True) to close the leak.
+    MemoryStreamBridge never raises this.
+
+    Attributes:
+        entry_id: The Redis stream entry id of the __end__ entry that was
+            still written despite EXPIRE failure.
+    """
+
+    def __init__(self, message: str, *, entry_id: str | None = None) -> None:
+        super().__init__(message)
+        self.entry_id = entry_id

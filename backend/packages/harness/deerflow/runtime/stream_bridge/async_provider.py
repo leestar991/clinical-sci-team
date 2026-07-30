@@ -31,6 +31,11 @@ async def make_stream_bridge(app_config: AppConfig | None = None) -> AsyncIterat
 
     Falls back to :class:`MemoryStreamBridge` when no configuration is
     provided and nothing is set globally.
+
+    When ``stream_bridge.type == "redis"``, constructs a
+    :class:`RedisStreamBridge` with strict admission. Defense-in-depth
+    validation here covers callers that bypass the Pydantic validator (e.g.
+    test fixtures using ``model_construct``).
     """
     if app_config is None:
         config = get_stream_bridge_config()
@@ -50,6 +55,33 @@ async def make_stream_bridge(app_config: AppConfig | None = None) -> AsyncIterat
         return
 
     if config.type == "redis":
-        raise NotImplementedError("Redis stream bridge planned for Phase 2")
+        # Defense-in-depth: Pydantic validator already enforces this, but
+        # raise here too in case a caller bypassed config loading.
+        if not config.namespace or not config.namespace.strip():
+            raise ValueError(f"stream_bridge.type='redis' requires a non-empty namespace; got namespace={config.namespace!r}")
+        if not config.redis_url:
+            raise ValueError("stream_bridge.type='redis' requires redis_url to be set")
+        # Lazy import so memory-only deployments don't need redis-py at import time.
+        from deerflow.runtime.stream_bridge.redis import RedisStreamBridge
+
+        bridge = RedisStreamBridge(
+            config.redis_url,
+            namespace=config.namespace,
+            queue_maxsize=config.queue_maxsize,
+            publish_max_connections=config.publish_max_connections,
+            subscribe_max_connections=config.subscribe_max_connections,
+        )
+        logger.info(
+            "Stream bridge initialised: redis (namespace=%s, queue_maxsize=%d, publish_pool=%d, subscribe_pool=%d)",
+            config.namespace,
+            config.queue_maxsize,
+            config.publish_max_connections,
+            config.subscribe_max_connections,
+        )
+        try:
+            yield bridge
+        finally:
+            await bridge.close()
+        return
 
     raise ValueError(f"Unknown stream bridge type: {config.type!r}")
