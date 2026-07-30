@@ -210,6 +210,7 @@ def _build_available_subagents_description(available_names: list[str], bash_avai
 
     return "\n".join(lines)
 
+
 def _build_available_subagents_text(allowed_subagents: list[str]) -> str:
     """Build the available subagents bullet list from a curated allowed list.
 
@@ -609,7 +610,8 @@ combined with a FastAPI gateway for REST API access [citation:FastAPI](https://f
   * For writing files → use `write_file` (NOT bash echo/cat heredoc)
   * For searching file contents → use `grep` (NOT bash grep -r)
   * For finding files by pattern → use `glob` (NOT bash find)
-  * `bash` is for LOCAL execution ONLY — running code, building, testing, data processing. It CANNOT access the internet. If you find yourself writing Python scripts that import requests/httpx/urllib in bash, STOP — use `web_search` or `web_fetch` instead.
+  * `bash` is for LOCAL execution ONLY — running code, building, testing, data processing. It CANNOT access the internet. If you find yourself writing Python scripts that import requests/httpx/urllib in bash, STOP — use `web_search` or \
+`web_fetch` instead.
 - Language Consistency: Keep using the same language as user's
 - Always Respond: Your thinking is internal. You MUST always provide a visible response to the user after thinking.
 </critical_reminders>
@@ -813,13 +815,13 @@ def _build_custom_mounts_section(*, app_config: AppConfig | None = None) -> str:
 
 
 def apply_prompt_template(
-    subagent_enabled: bool = False, 
-    max_concurrent_subagents: int = 3, 
-    *, 
-    agent_name: str | None = None, 
-    available_skills: set[str] | None = None, 
-    allowed_subagents: list[str] | None = None, 
-    app_config: AppConfig | None = None, 
+    subagent_enabled: bool = False,
+    max_concurrent_subagents: int = 3,
+    *,
+    agent_name: str | None = None,
+    available_skills: set[str] | None = None,
+    allowed_subagents: list[str] | None = None,
+    app_config: AppConfig | None = None,
     deferred_names: frozenset[str] = frozenset(),
 ) -> str:
     # Include subagent section only if enabled (from runtime parameter)

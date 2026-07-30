@@ -42,9 +42,7 @@ class ThreadState(AgentState):
 # 在 langgraph.json 同级目录创建 checkpointer.py
 from langgraph.checkpoint.postgres import PostgresSaver
 
-checkpointer = PostgresSaver.from_conn_string(
-    "postgresql://user:pass@localhost/dbname"
-)
+checkpointer = PostgresSaver.from_conn_string("postgresql://user:pass@localhost/dbname")
 ```
 
 然后在 `langgraph.json` 中引用：
@@ -75,11 +73,13 @@ title:
 ```python
 from deerflow.config.title_config import TitleConfig, set_title_config
 
-set_title_config(TitleConfig(
-    enabled=True,
-    max_words=8,
-    max_chars=80,
-))
+set_title_config(
+    TitleConfig(
+        enabled=True,
+        max_words=8,
+        max_chars=80,
+    )
+)
 ```
 
 ## 客户端使用
@@ -232,6 +232,7 @@ uv run pytest tests/test_title_middleware_core_logic.py tests/test_title_generat
 @override
 async def aafter_model(self, state: TitleMiddlewareState, runtime: Runtime) -> dict | None:
     return await self._agenerate_title_result(state)
+
 
 async def _agenerate_title_result(self, state: TitleMiddlewareState) -> dict | None:
     if not self._should_generate_title(state):

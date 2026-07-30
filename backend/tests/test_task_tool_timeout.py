@@ -1,12 +1,9 @@
 """Tests for task_tool timeout and retry logic."""
 
-import asyncio
 import time
-from dataclasses import replace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -26,7 +23,6 @@ def _make_subagent_config(timeout_seconds: int = 60):
 
 def _make_result(status, error=None, result=None):
     """Build a lightweight fake BackgroundTaskResult."""
-    from deerflow.subagents.executor import SubagentStatus
 
     r = MagicMock()
     r.status = status
@@ -197,7 +193,7 @@ class TestTaskToolRetryBehavior:
     async def test_no_retry_on_timeout(self):
         """TIMED_OUT status must NOT trigger a retry."""
         from deerflow.subagents.executor import SubagentStatus
-        from deerflow.tools.builtins.task_tool import SUBAGENT_MAX_RETRIES, task_tool
+        from deerflow.tools.builtins.task_tool import task_tool
 
         subagent_config = _make_subagent_config(timeout_seconds=60)
 

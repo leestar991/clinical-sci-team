@@ -340,6 +340,7 @@ class TestThreadStateAnnotations:
         """Sanity check that existing reducer wiring is preserved."""
         hints = get_type_hints(ThreadState, include_extras=True)
         assert merge_artifacts in hints["artifacts"].__metadata__
+
     def test_delegations_field_is_wired_to_merge_delegations(self):
         """ThreadState.delegations must merge task records by id."""
         hints = get_type_hints(ThreadState, include_extras=True)

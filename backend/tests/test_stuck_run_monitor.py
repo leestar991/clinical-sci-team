@@ -1,11 +1,10 @@
 """Tests for the stuck-run monitor in app.gateway.app."""
 
-import pytest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,7 +30,7 @@ def _make_client(threads_response=None, runs_response=None, cancel_response=None
 
 def _ts(seconds_ago: float) -> str:
     """Return an ISO-8601 UTC timestamp ``seconds_ago`` seconds in the past."""
-    dt = datetime.now(tz=timezone.utc) - timedelta(seconds=seconds_ago)
+    dt = datetime.now(tz=UTC) - timedelta(seconds=seconds_ago)
     return dt.isoformat()
 
 
@@ -57,10 +56,12 @@ class TestCheckAndCancelStuckRuns:
         cancel_resp.raise_for_status = MagicMock()
 
         # The first call to post is /threads/search, subsequent ones are /cancel
-        client.post = AsyncMock(side_effect=[
-            _make_client(threads_response=[{"thread_id": thread_id}]).post.return_value,
-            cancel_resp,
-        ])
+        client.post = AsyncMock(
+            side_effect=[
+                _make_client(threads_response=[{"thread_id": thread_id}]).post.return_value,
+                cancel_resp,
+            ]
+        )
         client.post.return_value.json.return_value = [{"thread_id": thread_id}]
 
         with patch("app.gateway.app._STUCK_RUN_THRESHOLD", 3600):

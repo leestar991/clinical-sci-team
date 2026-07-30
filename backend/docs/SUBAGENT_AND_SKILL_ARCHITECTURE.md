@@ -87,17 +87,18 @@
 ```python
 # packages/harness/deerflow/subagents/config.py
 
+
 @dataclass
 class SubagentConfig:
-    name: str                    # 唯一标识符
-    description: str             # 描述（何时使用）
-    system_prompt: str | None    # 子代理系统提示词
-    tools: list[str] | None      # 允许的工具（None=全部）
+    name: str  # 唯一标识符
+    description: str  # 描述（何时使用）
+    system_prompt: str | None  # 子代理系统提示词
+    tools: list[str] | None  # 允许的工具（None=全部）
     disallowed_tools: list[str]  # 禁止的工具（默认=["task"]，防止递归嵌套）
-    skills: list[str] | None     # 技能白名单（None=全部, []=无, ["a","b"]=指定）
-    model: str = "inherit"       # 模型（"inherit"=继承父代理）
-    max_turns: int = 50          # 最大轮次
-    timeout_seconds: int = 900   # 超时（秒）
+    skills: list[str] | None  # 技能白名单（None=全部, []=无, ["a","b"]=指定）
+    model: str = "inherit"  # 模型（"inherit"=继承父代理）
+    max_turns: int = 50  # 最大轮次
+    timeout_seconds: int = 900  # 超时（秒）
 ```
 
 #### 配置来源与优先级
@@ -183,10 +184,14 @@ registry.py
 
 SUBAGENT_TOOLS = [task_tool]  # task_status_tool 已不再暴露给 LLM
 
+
 def get_available_tools(
-    groups=None, include_mcp=True, model_name=None,
+    groups=None,
+    include_mcp=True,
+    model_name=None,
     subagent_enabled=False,  # ← 关键开关
-    *, app_config=None
+    *,
+    app_config=None,
 ) -> list[BaseTool]:
     # ...
     if subagent_enabled:
@@ -271,6 +276,7 @@ def apply_prompt_template(subagent_enabled=False, max_concurrent_subagents=3, ..
 MAX_CONCURRENT_SUBAGENTS = 3  # 来自 executor.py
 MIN_SUBAGENT_LIMIT = 2
 MAX_SUBAGENT_LIMIT = 4
+
 
 class SubagentLimitMiddleware(AgentMiddleware):
     def __init__(self, max_concurrent=3):
@@ -385,25 +391,26 @@ class SubagentExecutor:
 ```python
 # executor.py
 
+
 async def _load_skills(self) -> list[Skill]:
-    if self.config.skills == []:     # 显式空列表 → 不加载
+    if self.config.skills == []:  # 显式空列表 → 不加载
         return []
     all_skills = storage.load_skills(enabled_only=True)
     if self.config.skills is not None:  # 白名单过滤
         return [s for s in all_skills if s.name in allowed]
-    return all_skills                   # None → 加载全部
+    return all_skills  # None → 加载全部
+
 
 def _apply_skill_allowed_tools(self, skills):
     # 按 skill 的 allowed_tools 过滤工具列表
     return filter_tools_by_skill_allowed_tools(self._base_tools, skills)
 
+
 async def _load_skill_messages(self, skills):
     # 读取每个 skill 的 SKILL.md，注入为 SystemMessage
     for skill in skills:
         content = skill.skill_file.read_text()
-        messages.append(SystemMessage(
-            content=f'<skill name="{skill.name}">\n{content}\n</skill>'
-        ))
+        messages.append(SystemMessage(content=f'<skill name="{skill.name}">\n{content}\n</skill>'))
 ```
 
 ---
@@ -457,14 +464,14 @@ allowed-tools: [web_search, web_fetch, read_file]
 ```python
 @dataclass
 class Skill:
-    name: str                    # 唯一名称（hyphen-case）
-    description: str             # 描述
+    name: str  # 唯一名称（hyphen-case）
+    description: str  # 描述
     license: str | None
-    skill_dir: Path              # skill 目录路径
-    skill_file: Path             # SKILL.md 文件路径
-    category: SkillCategory      # PUBLIC 或 CUSTOM
-    allowed_tools: list[str]     # 允许的工具白名单
-    enabled: bool                # 是否启用
+    skill_dir: Path  # skill 目录路径
+    skill_file: Path  # SKILL.md 文件路径
+    category: SkillCategory  # PUBLIC 或 CUSTOM
+    allowed_tools: list[str]  # 允许的工具白名单
+    enabled: bool  # 是否启用
 ```
 
 ---

@@ -1,8 +1,8 @@
 """Tests for SubagentLimitMiddleware."""
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deerflow.agents.middlewares.subagent_limit_middleware import (

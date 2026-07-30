@@ -17,7 +17,6 @@ from deerflow.config.subagents_config import (
     get_subagents_app_config,
     load_subagents_config_from_dict,
 )
-from deerflow.subagents.config import SubagentConfig
 
 # ---------------------------------------------------------------------------
 # Helpers

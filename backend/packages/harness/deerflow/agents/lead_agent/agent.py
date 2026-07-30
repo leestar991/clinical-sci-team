@@ -480,7 +480,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
             "is_plan_mode": is_plan_mode,
             "subagent_enabled": subagent_enabled,
             "tool_groups": agent_config.tool_groups if agent_config else None,
-			"available_skills": sorted(available_skills) if available_skills is not None else None,
+            "available_skills": sorted(available_skills) if available_skills is not None else None,
             "allowed_subagents": agent_config.allowed_subagents if agent_config else None,
         }
     )

@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 # immediately without running the real executor module.
 
 
-class SubagentStatus(str, Enum):
+class SubagentStatus(Enum):
     """Enum mirror of the real SubagentStatus used by conftest to break circular imports."""
 
     PENDING = "pending"
