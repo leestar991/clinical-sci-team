@@ -233,11 +233,13 @@ def _build_available_subagents_text(allowed_subagents: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _build_subagent_section(max_concurrent: int, *, app_config: AppConfig, allowed_subagents: list[str] | None = None) -> str:
+def _build_subagent_section(max_concurrent: int, *, app_config: AppConfig | None = None, allowed_subagents: list[str] | None = None) -> str:
     """Build the subagent system prompt section with dynamic concurrency limit.
 
     Args:
         max_concurrent: Maximum number of concurrent subagent calls allowed per response.
+        app_config: Resolved app config used to look up registered subagents. When
+            omitted, registry lookups fall back to the process-global config.
         allowed_subagents: If provided, list only these subagents instead of the default
             general-purpose / bash pair. Populated from the agent's config.yaml.
 

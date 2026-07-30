@@ -88,6 +88,7 @@ class TestTaskToolRetryBehavior:
             context={"thread_id": "t1"},
             state={"sandbox": None, "thread_data": None},
             stream_writer=MagicMock(),
+            tools=[],
             tool_call_id="test-call-id",
             store=None,
         )
@@ -133,7 +134,6 @@ class TestTaskToolRetryBehavior:
         with (
             patch("deerflow.tools.builtins.task_tool.get_subagent_config", return_value=subagent_config),
             patch("deerflow.tools.builtins.task_tool.get_available_subagent_names", return_value=["general-purpose"]),
-            patch("deerflow.tools.builtins.task_tool.get_skills_prompt_section", return_value=""),
             patch("deerflow.tools.builtins.task_tool.is_host_bash_allowed", return_value=True),
             patch("deerflow.tools.get_available_tools", return_value=[]),
             patch("deerflow.tools.builtins.task_tool.get_background_task_result", side_effect=_get_result),
@@ -168,7 +168,6 @@ class TestTaskToolRetryBehavior:
         with (
             patch("deerflow.tools.builtins.task_tool.get_subagent_config", return_value=subagent_config),
             patch("deerflow.tools.builtins.task_tool.get_available_subagent_names", return_value=["general-purpose"]),
-            patch("deerflow.tools.builtins.task_tool.get_skills_prompt_section", return_value=""),
             patch("deerflow.tools.builtins.task_tool.is_host_bash_allowed", return_value=True),
             patch("deerflow.tools.get_available_tools", return_value=[]),
             patch("deerflow.tools.builtins.task_tool.get_background_task_result", side_effect=_always_fail),
@@ -205,7 +204,6 @@ class TestTaskToolRetryBehavior:
         with (
             patch("deerflow.tools.builtins.task_tool.get_subagent_config", return_value=subagent_config),
             patch("deerflow.tools.builtins.task_tool.get_available_subagent_names", return_value=["general-purpose"]),
-            patch("deerflow.tools.builtins.task_tool.get_skills_prompt_section", return_value=""),
             patch("deerflow.tools.builtins.task_tool.is_host_bash_allowed", return_value=True),
             patch("deerflow.tools.get_available_tools", return_value=[]),
             patch("deerflow.tools.builtins.task_tool.get_background_task_result", side_effect=_always_timeout),

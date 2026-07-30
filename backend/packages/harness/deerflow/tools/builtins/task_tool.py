@@ -29,6 +29,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of automatic retries when a subagent task FAILS. Timeouts and
+# user cancellations are never retried: a timeout means the work was too big for
+# the budget, so re-running it would just burn the same budget again.
+SUBAGENT_MAX_RETRIES = 1
+
+# Maximum characters of the last AI message surfaced as a partial result when a
+# subagent times out, so the lead agent can salvage completed work.
+SUBAGENT_PARTIAL_RESULT_LIMIT = 4000
+
 # Cache subagent token usage by tool_call_id so TokenUsageMiddleware can
 # write it back to the triggering AIMessage's usage_metadata.
 _subagent_usage_cache: dict[str, dict[str, int]] = {}
@@ -183,6 +192,31 @@ def _merge_skill_allowlists(parent: list[str] | None, child: list[str] | None) -
 
     parent_set = set(parent)
     return [skill for skill in child if skill in parent_set]
+
+
+def _extract_partial_result(ai_messages: list[dict] | None) -> str:
+    """Render the last AI message of a timed-out subagent as a partial result.
+
+    A timeout still often carries most of the useful work. Returning it lets the
+    lead agent continue from partial findings instead of discarding the run.
+    Returns an empty string when there is nothing textual to salvage.
+    """
+    if not ai_messages:
+        return ""
+
+    last_msg = ai_messages[-1]
+    content = last_msg.get("content", "") if isinstance(last_msg, dict) else getattr(last_msg, "content", "")
+
+    text = ""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        blocks = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
+        text = "\n".join(block for block in blocks if block.strip())
+
+    if not text.strip():
+        return ""
+    return f"\n\nPartial result (work completed before timeout):\n{text[:SUBAGENT_PARTIAL_RESULT_LIMIT]}"
 
 
 @tool("task", parse_docstring=True)
@@ -349,6 +383,10 @@ async def task_tool(
     last_message_count = 0  # Track how many AI messages we've already sent
     # Polling timeout: execution timeout + 60s buffer, checked every 5s
     max_poll_count = (config.timeout_seconds + 60) // 5
+    # Read the module global at call time so tests (and future config wiring)
+    # can override the retry budget.
+    retries_left = SUBAGENT_MAX_RETRIES
+    attempt = 0  # 0-based attempt index, used to build unique task_ids on retry
 
     logger.info(f"[trace={trace_id}] Started background task {task_id} (subagent={subagent_type}, timeout={config.timeout_seconds}s, polling_limit={max_poll_count} polls)")
 
@@ -400,11 +438,25 @@ async def task_tool(
                 cleanup_background_task(task_id)
                 return f"Task Succeeded. Result: {result.result}"
             elif result.status == SubagentStatus.FAILED:
-                _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
                 _report_subagent_usage(runtime, result)
-                writer({"type": "task_failed", "task_id": task_id, "error": result.error, "usage": usage})
-                logger.error(f"[trace={trace_id}] Task {task_id} failed: {result.error}")
                 cleanup_background_task(task_id)
+                if retries_left > 0:
+                    attempt += 1
+                    retries_left -= 1
+                    retry_task_id = f"{tool_call_id}-retry{attempt}"
+                    logger.warning(f"[trace={trace_id}] Task {task_id} failed, retrying as {retry_task_id} ({retries_left} retries left). Error: {result.error}")
+                    writer({"type": "task_failed", "task_id": task_id, "error": result.error, "usage": usage, "retrying": True})
+                    # Reset execution state for the retry attempt.
+                    executor = SubagentExecutor(**executor_kwargs)
+                    task_id = executor.execute_async(prompt, task_id=retry_task_id)
+                    poll_count = 0
+                    last_status = None
+                    last_message_count = 0
+                    writer({"type": "task_started", "task_id": task_id, "description": description})
+                    continue
+                _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
+                writer({"type": "task_failed", "task_id": task_id, "error": result.error, "usage": usage})
+                logger.error(f"[trace={trace_id}] Task {task_id} failed (no retries left): {result.error}")
                 return f"Task failed. Error: {result.error}"
             elif result.status == SubagentStatus.CANCELLED:
                 _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
@@ -419,7 +471,9 @@ async def task_tool(
                 writer({"type": "task_timed_out", "task_id": task_id, "error": result.error, "usage": usage})
                 logger.warning(f"[trace={trace_id}] Task {task_id} timed out: {result.error}")
                 cleanup_background_task(task_id)
-                return f"Task timed out. Error: {result.error}"
+                # Timeouts are not retried; surface whatever the subagent finished.
+                partial = _extract_partial_result(ai_messages)
+                return f"Task timed out after {config.timeout_seconds}s. Error: {result.error}{partial}"
 
             # Still running, wait before next poll
             await asyncio.sleep(5)

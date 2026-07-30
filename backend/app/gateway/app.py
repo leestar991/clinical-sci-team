@@ -1,8 +1,12 @@
 import asyncio
+import contextlib
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -51,6 +55,110 @@ logger = logging.getLogger(__name__)
 # Bounds worker exit time so uvicorn's reload supervisor does not keep
 # firing signals into a worker that is stuck waiting for shutdown cleanup.
 _SHUTDOWN_HOOK_TIMEOUT_SECONDS = 5.0
+
+# ---------------------------------------------------------------------------
+# Stuck-run monitor constants (overridable via environment variables)
+# ---------------------------------------------------------------------------
+_DEFAULT_LANGGRAPH_URL = "http://localhost:2024"
+_STUCK_RUN_CHECK_INTERVAL = int(os.environ.get("STUCK_RUN_CHECK_INTERVAL_SECONDS", "60"))
+# Threshold must stay well above the longest subagent timeout.
+_STUCK_RUN_THRESHOLD = int(os.environ.get("STUCK_RUN_THRESHOLD_SECONDS", "3600"))
+
+
+async def _check_and_cancel_stuck_runs(client: httpx.AsyncClient) -> None:
+    """Single scan: find busy threads, identify stuck runs, cancel them."""
+    try:
+        resp = await client.post("/threads/search", json={"status": "busy"})
+        resp.raise_for_status()
+        busy_threads: list[dict] = resp.json()
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        # LangGraph server not reachable (embedded topology, or the server is
+        # down) — nothing to scan, so skip silently instead of logging noise.
+        return
+    except Exception:
+        logger.exception("Failed to query busy threads from LangGraph")
+        return
+
+    now = datetime.now(tz=UTC)
+
+    for thread in busy_threads:
+        thread_id = thread.get("thread_id")
+        if not thread_id:
+            continue
+        try:
+            runs_resp = await client.get(f"/threads/{thread_id}/runs")
+            runs_resp.raise_for_status()
+            thread_runs_list: list[dict] = runs_resp.json()
+        except Exception:
+            logger.warning("Failed to list runs for thread %s", thread_id)
+            continue
+
+        for run in thread_runs_list:
+            if run.get("status") != "running":
+                continue
+
+            run_id = run.get("run_id")
+            created_at_raw = run.get("created_at")
+            if not run_id or not created_at_raw:
+                continue
+
+            try:
+                created_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00"))
+                age_seconds = (now - created_at).total_seconds()
+            except Exception:
+                continue
+
+            if age_seconds <= _STUCK_RUN_THRESHOLD:
+                continue
+
+            logger.warning(
+                "Cancelling stuck run %s on thread %s (age=%.0fs > threshold=%ds)",
+                run_id,
+                thread_id,
+                age_seconds,
+                _STUCK_RUN_THRESHOLD,
+            )
+            try:
+                cancel_resp = await client.post(
+                    f"/threads/{thread_id}/runs/{run_id}/cancel",
+                    json={"wait": False, "action": "rollback"},
+                )
+                cancel_resp.raise_for_status()
+                logger.info("Cancelled stuck run %s on thread %s", run_id, thread_id)
+            except Exception:
+                logger.exception("Failed to cancel stuck run %s on thread %s", run_id, thread_id)
+
+
+async def _stuck_run_monitor() -> None:
+    """Background task that periodically cancels LangGraph runs stuck after a restart.
+
+    After a server restart LangGraph can restore a run to a "running" state but
+    never re-dispatch its pending parallel tool calls, causing the run to block
+    indefinitely. This monitor detects such runs by age and cancels them with
+    ``action=rollback`` so queued successor runs can proceed.
+
+    When no LangGraph HTTP server is reachable (the default embedded topology),
+    each scan short-circuits on the connection error, so the task stays inert.
+    """
+    langgraph_url = os.environ.get("LANGGRAPH_API_URL", _DEFAULT_LANGGRAPH_URL)
+    logger.info(
+        "Stuck-run monitor started (url=%s, interval=%ds, threshold=%ds)",
+        langgraph_url,
+        _STUCK_RUN_CHECK_INTERVAL,
+        _STUCK_RUN_THRESHOLD,
+    )
+
+    async with httpx.AsyncClient(base_url=langgraph_url, timeout=10.0) as client:
+        while True:
+            try:
+                await asyncio.sleep(_STUCK_RUN_CHECK_INTERVAL)
+                await _check_and_cancel_stuck_runs(client)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Stuck-run monitor encountered an unexpected error; will retry next cycle")
+
+    logger.info("Stuck-run monitor stopped")
 
 
 async def _ensure_admin_user(app: FastAPI) -> None:
@@ -234,7 +342,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("No IM channels configured or channel service failed to start")
 
-        yield
+        # Start stuck-run monitor to auto-cancel runs that get permanently
+        # blocked after a server restart (LangGraph checkpoint restore bug).
+        monitor_task = asyncio.create_task(_stuck_run_monitor())
+
+        try:
+            yield
+        finally:
+            monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor_task
 
         try:
             await auth.close_oidc_service()

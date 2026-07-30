@@ -590,7 +590,6 @@ def test_task_tool_returns_partial_result_on_timeout(monkeypatch):
         type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
-    monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
     monkeypatch.setattr(
         task_tool_module,
         "get_background_task_result",
@@ -629,7 +628,6 @@ def test_task_tool_no_partial_result_when_no_messages(monkeypatch):
         type("DummyExecutor", (), {"__init__": lambda self, **kwargs: None, "execute_async": lambda self, prompt, task_id=None: task_id}),
     )
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: config)
-    monkeypatch.setattr(task_tool_module, "get_skills_prompt_section", lambda: "")
     monkeypatch.setattr(
         task_tool_module,
         "get_background_task_result",
@@ -1273,7 +1271,9 @@ def test_terminal_events_include_usage(monkeypatch, status, expected_type):
         tool_call_id="tc-usage",
     )
 
-    terminal_events = [e for e in events if e["type"] == expected_type]
+    # A retried failure emits an interim ``task_failed`` event flagged with
+    # ``retrying``; only the non-retry event is terminal for this assertion.
+    terminal_events = [e for e in events if e["type"] == expected_type and not e.get("retrying")]
     assert len(terminal_events) == 1
     assert terminal_events[0]["usage"] == {
         "input_tokens": 300,
