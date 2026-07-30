@@ -1,0 +1,34 @@
+[project]
+name = "cellflow-community"
+version = "0.1.0"
+description = "Community extensions for DeerFlow (tools, sandbox providers, storage backends)"
+requires-python = ">=3.12"
+dependencies = [
+    "deerflow-harness",
+    "agent-sandbox>=0.0.19",
+    "ddgs>=9.10.0",
+    "exa-py>=1.0.0",
+    "firecrawl-py>=1.15.0",
+    "kubernetes>=30.0.0",
+    "tavily-python>=0.7.17",
+    "oss2>=2.19",
+    "redis>=8.0",
+]
+
+[project.optional-dependencies]
+tos = ["tos>=2.9.0"]
+# agentrun-sdk intentionally NOT declared here: agentrun-sdk==0.0.42 pins
+# agentrun-mem0ai>=0.0.10, which requires protobuf<6.0.0, while
+# deerflow-harness's langgraph-api>=0.8.1 requires protobuf>=6.32.1 — an
+# unresolvable core dependency conflict (see AGENTS.md / packages/community
+# for the AgentRunSandboxProvider that needs it). Install agentrun-sdk
+# separately with `uv pip install --no-deps` (or a dedicated venv) if you
+# need the AgentRun sandbox provider; it will not be locked or verified for
+# compatibility with the rest of the workspace.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cellflow_community"]

@@ -50,7 +50,8 @@ markers = [
 index-url = "https://pypi.org/simple"
 
 [tool.uv.workspace]
-members = ["packages/harness"]
+members = ["packages/harness", "packages/community"]
 
 [tool.uv.sources]
 deerflow-harness = { workspace = true }
+cellflow-community = { workspace = true }
