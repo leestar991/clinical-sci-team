@@ -48,6 +48,7 @@ description: >
 | `<skill_dir>/scripts/image_gen.py` | AI image generation (multi-provider, manifest-driven) |
 | `<skill_dir>/scripts/image_search.py` | Web image search |
 | `<skill_dir>/scripts/svg_quality_checker.py` | SVG quality check (hard gate, exit code 0) |
+| `<skill_dir>/scripts/check_style.py` | 文本溢出/出界/字号/配色几何自检（`ERROR text-overflow` = 文字未换行超出画布，退出码≠0）|
 | `<skill_dir>/scripts/analyze_images.py` | Image analysis |
 
 For complete tool documentation, see `<skill_dir>/scripts/README.md`.
@@ -134,7 +135,13 @@ TaskCreate: "生成演讲者备注 notes/total.md" — pending
 - 画布：`viewBox="0 0 1280 720"`（16:9）
 - 禁用：`<style>`、CSS class、`filter`、`foreignObject`、`<g opacity>`、外部资源、JS
 - 字体栈必须以 PPT 安全字体结尾（`Microsoft YaHei` / `Arial` / `Times New Roman`）
-- 文本换行：`<tspan>` 手动换行，`dy = font-size × line-height`
+- **文本换行（强制，头号缺陷防线）**：SVG `<text>` **不会自动换行**，超出容器的文字会横向溢出/被裁切。必须**手动**按下述算法折行：
+  1. **算每行容量**：`每行字数 = floor((容器宽度 − 2×内边距) / 单字宽)`；单字宽 ≈ 中文/全角 `font-size × 1.0`，英文/数字 `font-size × 0.55`。（参考 `svg-code-rules.md §换行计算`：18px 中文≈25 字/行@450px、英文≈60 字符/行。）
+  2. **拆行**：文本超过每行容量就拆成多行，每行一个 `<tspan x="{左边界}" dy="{行高}">`；首行 `dy="0"`，其余 `dy = font-size × line-height`（如 18×1.6≈28）。
+  3. **⚠️ 复制模版后必须按新内容重排**：从 `<lib>` 模版复制页面后，替换文字时**新内容常比模版示例更长**——**禁止**只把长文本塞进模版原有的 tspan 槽位（会溢出）。必须按新文本长度**增删 tspan 行数**，使每一行都 ≤ 每行容量。
+  4. **纵向溢出**：折行后若总高度超出容器高度 → 先按步长降 `font-size`（下限 14px），仍放不下则减少内容/拆成多卡片或多列（见「异常处理·文本过长」）。
+  5. **单逻辑行=单 `<text>`**：同一行内的着色/加粗用**内联** `<tspan>`（不带 `x`/`y`/`dy`）；只有真正换行的 tspan 才带 `x`+`dy`（详见 `shared-standards.md §Inline Text Runs`）。
+  6. **自检**：写完每页跑 `check_style.py`，`ERROR text-overflow` 必须清零（见 6.1）。
 - 图标：`<use data-icon="tabler-outline/icon-name" fill="#HEX" stroke-width="2">`（finalize_svg.py 自动内联）
 - 插图：`<image href="../images/xxx.png" preserveAspectRatio="...">`（finalize_svg.py 自动裁剪 + 内联）
 - 语义分组：每个内容块用顶层 `<g id="...">` 分组
@@ -171,9 +178,16 @@ cd /mnt/user-data/workspace && python3 <skill_dir>/scripts/svg_editor/server.py 
 **逐页生成 + 后处理 + 进度更新**：
 
 每页执行以下步骤：
-1. 手写 SVG → `svg_output/NN_页名.svg`
-2. 运行 `finalize_svg.py` 产出 `svg_final/NN_页名.svg`
-3. **TaskUpdate**：将当前页任务标记为 `completed`，将下一页任务标记为 `in_progress`
+1. 手写 SVG → `svg_output/NN_页名.svg`（文字按「文本换行（强制）」算法折行，切勿单行超容器）
+2. **文本溢出自检**（强制）：
+   ```bash
+   cd /mnt/user-data/workspace && python3 <skill_dir>/scripts/check_style.py svg_output/
+   ```
+   聚焦 `ERROR text-overflow`（文字未换行超出画布）与 `ERROR out-of-canvas`——**任一 ERROR 必须当页修复**（增删 `<tspan>` 折行或降字号）后重跑至 0 个 ERROR，才能继续下一页。（`WARN off-palette` 等非本步重点。）
+3. 运行 `finalize_svg.py` 产出 `svg_final/NN_页名.svg`
+4. **TaskUpdate**：将当前页任务标记为 `completed`，将下一页任务标记为 `in_progress`
+
+> ⚠️ `check_style.py` 的文字溢出为**逐字符宽度估算的机械检测**，能抓住「文字不换行冲出画布」这类头号缺陷；它只检测超出**画布**边缘，卡片内溢出仍需按「文本换行（强制）」算法自觉折行。
 
 **精简文件展示**（仅展示当前页，禁止累计清单）：
 
@@ -204,6 +218,15 @@ cd /mnt/user-data/workspace && python3 <skill_dir>/scripts/svg_editor/server.py 
 ```bash
 cd /mnt/user-data/workspace && python3 <skill_dir>/scripts/svg_quality_checker.py .
 ```
+
+**并跑文本溢出批量门（强制）**——`svg_quality_checker.py` 仅对超长单行文本给 warning，不逐字符量宽；用 `check_style.py` 做几何级溢出核验：
+
+```bash
+cd /mnt/user-data/workspace && python3 <skill_dir>/scripts/check_style.py svg_output/
+```
+
+- 任何 `ERROR text-overflow` / `ERROR out-of-canvas` → 定位对应页，按「文本换行（强制）」算法增删 `<tspan>` 折行或降字号，重跑至 0 个 ERROR。
+- `WARN off-palette` 等：能修则修，否则确认放行。
 
 - `error`（违禁 SVG 特性、viewBox 不匹配、spec_lock 漂移等）→ **必须修完再往下**
 - `warning`（低分辨率图片、非 PPT 安全字体尾巴等）→ 能修就修，否则确认放行
@@ -356,7 +379,7 @@ cat notes/01_*.md notes/02_*.md ... > notes/total.md
 
 - **配图获取失败**：retry once → 仍失败标记 `Needs-Manual`，告知用户，继续生成其余页
 - **质检 ERROR**：定位错误页 → 修正该页 SVG → 重跑质检直到退出码 0
-- **文本过长**：自动分割为多卡片/多 `<tspan>`，告知用户
+- **文本过长/不换行**：按「内联关键约束·文本换行（强制）」算法处理——先按每行字数容量拆成多 `<tspan x dy>` 行；纵向仍溢出则降字号（下限 14px），再不行拆成多卡片/多列。写完跑 `check_style.py` 确认 `ERROR text-overflow` 为 0，告知用户。
 - **无具体数据**：生成示意占位数据，标注"示例数据"
 - **超出 SVG 能力（动画/3D）**：说明限制，给出静态替代方案
 

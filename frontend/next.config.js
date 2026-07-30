@@ -20,7 +20,9 @@ const config = {
     process.env.NEXT_CONFIG_BUILD_OUTPUT === "standalone"
       ? "standalone"
       : undefined,
-  maxBodySize: 100 * 1024 * 1024,  // ← 新增
+  experimental: {
+    middlewareClientMaxBodySize: "100mb",
+  },
   i18n: {
     locales: ["en", "zh"],
     defaultLocale: "en",

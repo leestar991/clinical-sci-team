@@ -86,7 +86,7 @@ ppt-generator (总编排)
 | 步骤 | 完成标志（产物） |
 |------|-----------------|
 | Stage 1 | `design_spec.md` + `spec_lock.md` 存在（含 §IX Outline 页 stem 集） |
-| Stage 2 | 每页 `svg_output/NN_页名.svg` + `svg_final/NN_页名.svg` 存在且质检通过；`notes/total.md` 存在，section 数 == SVG 页数 |
+| Stage 2 | 每页 `svg_output/NN_页名.svg` + `svg_final/NN_页名.svg` 存在且质检通过（含 `check_style.py` 文本溢出门：`ERROR text-overflow`/`out-of-canvas` 为 0）；`notes/total.md` 存在，section 数 == SVG 页数 |
 | Stage 3 | `svg_final/` 已生成；`outputs/*.pptx` 可打开且含演讲者备注 |
 
 ## 并行执行
@@ -126,7 +126,7 @@ Stage 3 子步骤（7.0 → 7.1 → 7.2 → 7.3）**必须串行**——每步�
     - 每页生成后运行 `finalize_svg.py` → `svg_final/NN_页名.svg`
     - svg_editor 可选提前启动（`--live` 模式），生成完成后 AskUserQuestion 可交互选项
     - 📄 每页仅展示单行摘要 + TaskUpdate 驱动进度（禁止累计文件清单）
-  - 6.2 Quality Check Gate：`svg_quality_checker.py` 硬门槛（退出码 0，质检 `svg_output/`）
+  - 6.2 Quality Check Gate：`svg_quality_checker.py` 硬门槛（退出码 0，质检 `svg_output/`）+ `check_style.py` 文本溢出门（`ERROR text-overflow`/`out-of-canvas` 清零，防止文字不换行冲出画布）
   - 6.2.1 用户编辑阶段 (User Editing Phase) ⛔ BLOCKING
     - AskUserQuestion 可交互选项（启动编辑器 / 对话编辑 / 应用注解 / 跳过编辑）
     - 暂停所有自动生成任务，等待用户点击选项或回复
@@ -188,3 +188,4 @@ Stage 3 子步骤（7.0 → 7.1 → 7.2 → 7.3）**必须串行**——每步�
 - **路径兼容性**：运行期临时 Python 脚本不要把 `/mnt/user-data/...` 绝对路径硬编码到脚本内部；优先使用 `Path.cwd()` / 相对路径。
 - **日志/临时文件路径**：沙箱会拦截指向 `/tmp` 等工作区外的绝对路径写入；安装日志、调试输出统一落到 `workspace/`。
 - **续跑策略**：若 Stage 1（spec）/ Stage 2（SVG + notes）已完成，后续失败时不要回退重做上游内容；只补做失败步骤及其下游。
+- **文字不换行是头号视觉缺陷**：SVG `<text>` 不自动换行，从模版复制页面后若把更长的文字塞进原有 tspan 槽位会横向冲出容器/画布。Stage 2 已内置强制折行算法 + `check_style.py` 文本溢出门（`ERROR text-overflow` 必须清零）；若成片出现文字溢出，通常是 Stage 2 未按新内容长度重排 `<tspan>` 行数——补做时对相关页重跑折行与 `check_style.py`，而非重生成整套。
