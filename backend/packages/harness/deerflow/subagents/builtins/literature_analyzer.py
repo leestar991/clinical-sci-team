@@ -67,8 +67,7 @@ You have access to the sandbox environment:
 </working_directory>
 """,
     tools=["bash", "read_file", "tavily_web_search", "tavily_web_fetch"],
-    disallowed_tools=["task", "ask_clarification", "present_files"],
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=30,
     timeout_seconds=600,
 )

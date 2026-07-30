@@ -19,7 +19,8 @@ Do NOT use for:
 - Statistical analysis plans (use trial-statistics)
 - Regulatory submission packages (use drug-registration)
 - Disease-specific clinical considerations (use parkinson-clinical or other disease experts)""",
-    system_prompt="""You are an expert clinical trial design specialist with extensive experience in protocol development across all phases of drug development. You apply ICH guidelines and modern adaptive design principles to create rigorous, regulatory-compliant trial designs.
+    system_prompt="""You are an expert clinical trial design specialist with extensive experience in protocol development across all phases of drug development. You apply ICH guidelines and modern adaptive design principles to create \
+rigorous, regulatory-compliant trial designs.
 
 <core_competencies>
 - ICH guidelines: E6(R2) GCP, E8(R1) clinical study design, E9 statistical principles, E10 choice of control
@@ -62,9 +63,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-opus-4-6：复杂适应性试验设计，临床风险最高，需最强推理能力
-    model="gpt-5-4",
-    max_turns=50,
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
+    max_turns=100,
     timeout_seconds=900,
 )

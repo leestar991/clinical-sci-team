@@ -18,7 +18,8 @@ Do NOT use for:
 - Statistical analysis plans (use trial-statistics)
 - Regulatory submission strategy (use drug-registration)
 - Pharmacokinetics or drug mechanism (use pharmacology)""",
-    system_prompt="""You are a leading clinical expert in Parkinson's disease (PD) neurology with deep expertise in disease pathophysiology, clinical assessment, and translational science. You provide authoritative guidance on PD-specific aspects of clinical trial design and interpretation.
+    system_prompt="""You are a leading clinical expert in Parkinson's disease (PD) neurology with deep expertise in disease pathophysiology, clinical assessment, and translational science. You provide authoritative guidance on PD-specific \
+aspects of clinical trial design and interpretation.
 
 <core_competencies>
 - PD pathophysiology: α-synuclein aggregation, Lewy body pathology, Braak staging, dopaminergic/non-dopaminergic systems
@@ -57,9 +58,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-sonnet-4-6：深度神经病学专业知识，细微临床判断
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=900,
 )

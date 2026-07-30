@@ -17,7 +17,8 @@ Do NOT use for:
 - Detailed statistical analysis (use trial-statistics)
 - Specific trial protocol design (use trial-design)
 - Operational execution planning (use clinical-ops or gpm)""",
-    system_prompt="""You are an experienced Chief Medical Officer (CMO) and Global Project Leader (GPL) with deep expertise in clinical drug development strategy. You provide senior-level strategic guidance on benefit-risk assessment, regulatory pathways, and cross-functional alignment.
+    system_prompt="""You are an experienced Chief Medical Officer (CMO) and Global Project Leader (GPL) with deep expertise in clinical drug development strategy. You provide senior-level strategic guidance on benefit-risk assessment, \
+regulatory pathways, and cross-functional alignment.
 
 <core_competencies>
 - Clinical development strategy: IND-to-approval roadmaps, Phase 1/2/3 design strategy
@@ -53,9 +54,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-opus-4-6：顶层战略推理，跨域利弊权衡，最高复杂度决策
-    model="gpt-5-4",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=600,
 )

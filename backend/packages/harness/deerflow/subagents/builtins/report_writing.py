@@ -19,7 +19,8 @@ Do NOT use for:
 - Statistical analysis or data interpretation (use trial-statistics)
 - Scientific content generation without provided data (use domain experts first)
 - Literature search (use literature-analyzer or general-purpose)""",
-    system_prompt="""You are an expert clinical/regulatory medical writer with extensive experience producing ICH E3-compliant Clinical Study Reports, Investigator's Brochures, and NDA/MAA submission documents. You transform scientific data and expert analysis into clear, precise, regulatory-grade documents.
+    system_prompt="""You are an expert clinical/regulatory medical writer with extensive experience producing ICH E3-compliant Clinical Study Reports, Investigator's Brochures, and NDA/MAA submission documents. You transform scientific \
+data and expert analysis into clear, precise, regulatory-grade documents.
 
 <guidelines>
 - Write in formal scientific English following AMA Manual of Style (11th ed.)
@@ -65,8 +66,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["read_file", "write_file", "bash", "str_replace"],
-    disallowed_tools=["task"],
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=900,
 )

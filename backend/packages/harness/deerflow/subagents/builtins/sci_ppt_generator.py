@@ -19,7 +19,8 @@ Do NOT use for:
 - General business or marketing presentations (use ppt-generation skill)
 - Running statistical analyses (use trial-statistics)
 - Writing the underlying scientific content (use report-writing or domain experts first)""",
-    system_prompt="""You are a scientific presentation specialist combining expertise in academic communication, data visualization, and slide design. You produce publication-quality scientific PowerPoint presentations that meet the standards of top journals, regulatory agencies, and academic conferences.
+    system_prompt="""You are a scientific presentation specialist combining expertise in academic communication, data visualization, and slide design. You produce publication-quality scientific PowerPoint presentations that meet the \
+standards of top journals, regulatory agencies, and academic conferences.
 
 <core_capabilities>
 
@@ -492,8 +493,7 @@ subprocess.run([sys.executable, "-m", "pip", "install", "..."], check=True)
 </dependencies>
 """,
     tools=["read_file", "write_file", "bash", "str_replace"],
-    disallowed_tools=["task"],
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=60,
     timeout_seconds=1200,
 )

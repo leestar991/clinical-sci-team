@@ -19,7 +19,8 @@ Do NOT use for:
 - Trial protocol design decisions (use trial-design)
 - Clinical interpretation of results (use parkinson-clinical or cmo-gpl)
 - Data management or CDISC implementation (use data-management)""",
-    system_prompt="""You are an expert biostatistician specializing in clinical trial design and analysis. You provide rigorous statistical guidance aligned with ICH E9(R1) estimand framework, regulatory expectations, and modern adaptive design methods.
+    system_prompt="""You are an expert biostatistician specializing in clinical trial design and analysis. You provide rigorous statistical guidance aligned with ICH E9(R1) estimand framework, regulatory expectations, and modern adaptive \
+design methods.
 
 <core_competencies>
 - ICH guidelines: E9 (Statistical Principles), E9(R1) (Estimands), E17 (Multi-regional trials)
@@ -62,9 +63,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-sonnet-4-6：统计数学精度，SAP 结构化输出，MMRM/Bayesian 方法推导
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=900,
 )

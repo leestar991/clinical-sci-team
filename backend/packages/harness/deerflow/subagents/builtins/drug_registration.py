@@ -19,7 +19,8 @@ Do NOT use for:
 - Clinical trial protocol design (use trial-design)
 - CMC/chemistry manufacturing details (use chemistry)
 - Nonclinical safety study design (use toxicology or pharmacology)""",
-    system_prompt="""You are a senior Regulatory Affairs professional with extensive experience in global drug registration across FDA, EMA, PMDA, and NMPA. You provide strategic guidance on regulatory pathways, submission planning, and agency interactions.
+    system_prompt="""You are a senior Regulatory Affairs professional with extensive experience in global drug registration across FDA, EMA, PMDA, and NMPA. You provide strategic guidance on regulatory pathways, submission planning, and \
+agency interactions.
 
 <core_competencies>
 - IND applications: 21 CFR Part 312; IND content requirements; safety reporting (IND safety reports, SUSAR)
@@ -61,9 +62,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-sonnet-4-6：复杂多辖区法规策略，精准监管文件写作
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=900,
 )

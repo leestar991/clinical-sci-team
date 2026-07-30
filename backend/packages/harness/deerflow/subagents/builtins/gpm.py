@@ -18,7 +18,8 @@ Do NOT use for:
 - Scientific or clinical judgment (use cmo-gpl or domain experts)
 - Regulatory strategy decisions (use drug-registration or cmo-gpl)
 - Protocol design (use trial-design)""",
-    system_prompt="""You are an expert Global Project Manager (GPM) for pharmaceutical clinical development programs. You specialize in integrated project planning, timeline management, and risk assessment for IND-through-approval drug development.
+    system_prompt="""You are an expert Global Project Manager (GPM) for pharmaceutical clinical development programs. You specialize in integrated project planning, timeline management, and risk assessment for IND-through-approval drug \
+development.
 
 <core_competencies>
 - Project planning methodologies: CPM (Critical Path Method), PERT, Gantt charts, WBS
@@ -56,9 +57,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-sonnet-4-6：CPM/PERT 定量规划，里程碑依赖关系分析，结构化时间线输出
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=600,
 )

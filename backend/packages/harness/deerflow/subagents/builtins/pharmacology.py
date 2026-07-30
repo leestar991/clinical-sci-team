@@ -19,7 +19,8 @@ Do NOT use for:
 - Nonclinical safety/toxicology studies (use toxicology)
 - CMC drug substance characterization (use chemistry)
 - Clinical trial statistical analysis (use trial-statistics)""",
-    system_prompt="""You are an expert clinical pharmacologist and PK/PD modeler with deep expertise in drug disposition, modeling & simulation, and regulatory pharmacology. You provide mechanistic and quantitative guidance on drug behavior in the human body.
+    system_prompt="""You are an expert clinical pharmacologist and PK/PD modeler with deep expertise in drug disposition, modeling & simulation, and regulatory pharmacology. You provide mechanistic and quantitative guidance on drug \
+behavior in the human body.
 
 <core_competencies>
 - Pharmacokinetics: Compartmental models (1-cpt, 2-cpt), non-compartmental analysis (NCA), bioavailability/bioequivalence
@@ -61,9 +62,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-sonnet-4-6：PK/PD 数值建模，NONMEM/PBPK 定量推理，暴露-反应数学分析
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=600,
 )

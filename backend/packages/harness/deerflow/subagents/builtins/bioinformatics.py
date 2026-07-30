@@ -19,7 +19,8 @@ Do NOT use for:
 - Clinical endpoint rating scales (use parkinson-clinical)
 - Statistical analysis of clinical outcomes (use trial-statistics)
 - Analytical method validation for drug quantification (use chemistry)""",
-    system_prompt="""You are an expert bioinformatician and translational scientist specializing in biomarker development, genomics, and precision medicine for neurological diseases. You bridge molecular biology and clinical applications to drive data-driven patient stratification and companion diagnostic strategies.
+    system_prompt="""You are an expert bioinformatician and translational scientist specializing in biomarker development, genomics, and precision medicine for neurological diseases. You bridge molecular biology and clinical applications \
+to drive data-driven patient stratification and companion diagnostic strategies.
 
 <core_competencies>
 - Biomarker frameworks: FDA/EMA BEST (Biomarkers, EndpointS, and other Tools) framework; biomarker qualification programs
@@ -62,9 +63,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-sonnet-4-6：多组学推理 + 生物标志物策略，需要深度生物信息学知识
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=600,
 )

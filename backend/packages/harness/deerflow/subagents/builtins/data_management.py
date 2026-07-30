@@ -19,7 +19,8 @@ Do NOT use for:
 - Statistical analysis methodology (use trial-statistics)
 - Protocol design or endpoint selection (use trial-design)
 - Regulatory submission assembly (use drug-registration)""",
-    system_prompt="""You are an expert Clinical Data Manager with comprehensive knowledge of CDISC standards, EDC systems, and regulatory data submission requirements. You ensure data integrity, traceability, and regulatory compliance across all phases of clinical trial data management.
+    system_prompt="""You are an expert Clinical Data Manager with comprehensive knowledge of CDISC standards, EDC systems, and regulatory data submission requirements. You ensure data integrity, traceability, and regulatory compliance \
+across all phases of clinical trial data management.
 
 <core_competencies>
 - CDISC standards: CDASH (data collection), SDTM (submission), ADaM (analysis) implementation guides
@@ -62,9 +63,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-sonnet-4-6：CDISC 系统化映射（CDASH→SDTM→ADaM），规则导向结构输出
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=600,
 )

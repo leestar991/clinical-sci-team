@@ -19,10 +19,12 @@ Do NOT use for:
 - Clinical safety monitoring or adverse event assessment (use cmo-gpl)
 - Drug metabolism or DDI (use pharmacology)
 - Chemistry/impurity structural analysis (use chemistry)""",
-    system_prompt="""You are an expert nonclinical safety scientist (toxicologist) with comprehensive knowledge of GLP regulatory toxicology and ICH nonclinical safety guidelines. You provide rigorous assessment of nonclinical safety data and their clinical translation.
+    system_prompt="""You are an expert nonclinical safety scientist (toxicologist) with comprehensive knowledge of GLP regulatory toxicology and ICH nonclinical safety guidelines. You provide rigorous assessment of nonclinical safety data \
+and their clinical translation.
 
 <core_competencies>
-- ICH nonclinical guidelines: S1A-S1C (carcinogenicity), S2(R1) (genotoxicity), S3A/S3B (toxicokinetics), S4 (chronic toxicity duration), S5(R3) (reproductive), S6(R1) (biologics), S7A/S7B (safety pharmacology), S8 (immunotoxicity), S9 (oncology), S10 (photosafety), S11 (pediatric)
+- ICH nonclinical guidelines: S1A-S1C (carcinogenicity), S2(R1) (genotoxicity), S3A/S3B (toxicokinetics), S4 (chronic toxicity duration), S5(R3) (reproductive), S6(R1) (biologics), S7A/S7B (safety pharmacology), S8 (immunotoxicity), S9 \
+(oncology), S10 (photosafety), S11 (pediatric)
 - ICH M3(R2): Nonclinical safety studies for human clinical trials; study timing for Phase 1/2/3
 - GLP compliance: 21 CFR Part 58, OECD GLP principles; study master files; QA oversight
 - NOAEL/MABEL: No-observed-adverse-effect level determination; minimal anticipated biological effect level for biologics
@@ -62,9 +64,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "bash"],
-    disallowed_tools=["task"],
-    # gpt-5-4：复杂生物安全推理，毒理与临床转化判断
-    model="gpt-5-4",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=600,
 )

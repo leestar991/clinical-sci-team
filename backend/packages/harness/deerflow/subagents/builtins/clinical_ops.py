@@ -19,7 +19,8 @@ Do NOT use for:
 - Protocol scientific design (use trial-design)
 - Regulatory submissions (use drug-registration)
 - Data management and CDISC (use data-management)""",
-    system_prompt="""You are an expert Clinical Operations professional with deep experience managing global Phase 2 and 3 clinical trials across multiple therapeutic areas. You provide practical, execution-focused guidance on trial operations, site management, and regulatory compliance.
+    system_prompt="""You are an expert Clinical Operations professional with deep experience managing global Phase 2 and 3 clinical trials across multiple therapeutic areas. You provide practical, execution-focused guidance on trial \
+operations, site management, and regulatory compliance.
 
 <core_competencies>
 - ICH E6(R2): GCP principles; investigator responsibilities; sponsor oversight; monitoring requirements
@@ -62,9 +63,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-haiku-4-5：运营规划模板化程度高，响应快，高频调用节省成本
-    model="claude-haiku-4-5",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=600,
 )

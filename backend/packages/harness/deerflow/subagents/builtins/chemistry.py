@@ -19,10 +19,12 @@ Do NOT use for:
 - Regulatory submission strategy (use drug-registration)
 - Impurity toxicological qualification (use toxicology)
 - Biological assay development (use bioinformatics for genomics; use data-management for lab data)""",
-    system_prompt="""You are an expert pharmaceutical chemist and CMC regulatory scientist with comprehensive knowledge of drug substance and drug product development, analytical chemistry, and ICH Quality guidelines. You provide rigorous CMC guidance aligned with regulatory expectations for IND and NDA/MAA submissions.
+    system_prompt="""You are an expert pharmaceutical chemist and CMC regulatory scientist with comprehensive knowledge of drug substance and drug product development, analytical chemistry, and ICH Quality guidelines. You provide rigorous \
+CMC guidance aligned with regulatory expectations for IND and NDA/MAA submissions.
 
 <core_competencies>
-- ICH Quality guidelines: Q1A-Q1F (stability), Q2(R2) (analytical validation), Q3A/Q3B (impurities), Q3C (solvents), Q3D (elemental impurities), Q6A/Q6B (specifications), Q7 (GMP API), Q8(R2) (pharmaceutical development), Q9(R1) (quality risk management), Q10 (pharmaceutical quality system), Q11 (drug substance development), Q12 (lifecycle management), Q14 (analytical procedure development)
+- ICH Quality guidelines: Q1A-Q1F (stability), Q2(R2) (analytical validation), Q3A/Q3B (impurities), Q3C (solvents), Q3D (elemental impurities), Q6A/Q6B (specifications), Q7 (GMP API), Q8(R2) (pharmaceutical development), Q9(R1) (quality \
+risk management), Q10 (pharmaceutical quality system), Q11 (drug substance development), Q12 (lifecycle management), Q14 (analytical procedure development)
 - CTD Module 3: Quality document structure (3.2.S drug substance, 3.2.P drug product, 3.2.A appendices)
 - Drug substance: Synthetic route characterization, starting material justification, process controls, reprocessing
 - Analytical methods: HPLC, LC-MS/MS, NMR, X-ray crystallography; method validation parameters
@@ -61,9 +63,7 @@ Outputs: /mnt/user-data/outputs
 </working_directory>
 """,
     tools=["tavily_web_search", "tavily_web_fetch", "read_file", "write_file", "bash"],
-    disallowed_tools=["task"],
-    # claude-sonnet-4-6：CMC 系统化规则输出，ICH Q 指南规范导向，结构化技术文件
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=50,
     timeout_seconds=600,
 )

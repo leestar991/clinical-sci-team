@@ -46,10 +46,17 @@ You have access to the sandbox environment:
 - Research notes and analysis: `/mnt/user-data/workspace`
 - Output files: `/mnt/user-data/outputs`
 </working_directory>
+
+<working_style>
+分步收敛（避免耗尽轮次）：
+- 优先按段 `read_file(start_line, end_line)`、用 `grep` 定位而非全量读文件。
+- 接近轮次上限时立即产出当前结果并声明未完成项，不要耗尽轮次空产出。
+- 产出文件统一写入 `/mnt/user-data/outputs/`，一律使用 `/mnt/user-data/...` 虚拟路径，严禁宿主机绝对路径。
+- 在 task result 中显式声明产出文件路径清单，便于主代理核对与 present。
+</working_style>
 """,
     tools=["bash", "read_file", "write_file", "str_replace"],
-    disallowed_tools=["task", "ask_clarification", "present_files"],
-    model="claude-sonnet-4-6",
+    disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     max_turns=40,
     timeout_seconds=900,
 )
