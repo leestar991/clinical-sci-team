@@ -626,7 +626,7 @@ class LocalSandbox(Sandbox):
             # Re-raise with the original path for clearer error messages, hiding internal resolved paths
             raise type(e)(e.errno, e.strerror, path) from None
 
-    def download_file(self, path: str) -> bytes:
+    def download_file(self, path: str, *, max_bytes: int | None = None) -> bytes:
         normalised = path.replace("\\", "/")
         stripped_path = normalised.lstrip("/")
         allowed_prefix = VIRTUAL_PATH_PREFIX.lstrip("/")
@@ -635,11 +635,12 @@ class LocalSandbox(Sandbox):
             raise PermissionError(errno.EACCES, f"Access denied: path must be under '{VIRTUAL_PATH_PREFIX}'", path)
 
         resolved_path = self._resolve_path(path)
-        max_download_size = 100 * 1024 * 1024
+        builtin_cap = 100 * 1024 * 1024
+        effective_cap = min(builtin_cap, max_bytes) if max_bytes is not None else builtin_cap
         try:
             file_size = os.path.getsize(resolved_path)
-            if file_size > max_download_size:
-                raise OSError(errno.EFBIG, f"File exceeds maximum download size of {max_download_size} bytes", path)
+            if file_size > effective_cap:
+                raise OSError(errno.EFBIG, f"File exceeds maximum download size of {effective_cap} bytes", path)
             # TOCTOU note: the file could grow between getsize() and read(); accepted
             # tradeoff since this is a controlled sandbox environment.
             with open(resolved_path, "rb") as f:

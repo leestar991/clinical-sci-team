@@ -56,11 +56,14 @@ class Sandbox(ABC):
         pass
 
     @abstractmethod
-    def download_file(self, path: str) -> bytes:
+    def download_file(self, path: str, *, max_bytes: int | None = None) -> bytes:
         """Download the binary content of a file.
 
         Args:
             path: The absolute path of the file to download.
+            max_bytes: Optional caller-imposed size cap. Combined with the
+                implementation's built-in download limit; the lower of the two
+                applies. ``None`` means only the built-in limit applies.
 
         Returns:
             Raw file bytes.
@@ -68,9 +71,10 @@ class Sandbox(ABC):
         Raises:
             PermissionError: If path traversal is detected or the path is outside
                 the allowed virtual prefix.
-            OSError: If the file cannot be read or does not exist.  Both local
-                and remote implementations must raise ``OSError`` so callers
-                have a single exception type to handle.
+            OSError: If the file cannot be read, does not exist, or exceeds the
+                effective size cap (``errno.EFBIG``). Both local and remote
+                implementations must raise ``OSError`` so callers have a single
+                exception type to handle.
         """
         pass
 
