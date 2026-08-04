@@ -149,7 +149,8 @@ def _workspace(tmp_path: Path, route: str | None, pages: list[tuple[int, str]]) 
             {
                 "total_pages": len(pages),
                 "scanned_pages": sum(1 for _, t in pages if t == "scanned"),
-                "pages": [{"filename": f"S1_page_{i:03d}.jpg", "type": t} for i, t in pages],
+                "text_pages": sum(1 for _, t in pages if t == "text"),
+                "pages": [{"filename": f"S1_page_{i:03d}." + ("txt" if t == "text" else "jpg"), "type": t} for i, t in pages],
             }
         ),
         encoding="utf-8",
@@ -157,15 +158,31 @@ def _workspace(tmp_path: Path, route: str | None, pages: list[tuple[int, str]]) 
     return ws
 
 
-def test_route_b_denominator_excludes_text_pages(tmp_path: Path):
-    """分母必须是 scanned 页；用 total_pages 会永远判不覆盖（历史故障）。"""
+def test_route_b_denominator_counts_all_pages_by_type(tmp_path: Path):
+    """分母 = 全部页，但两类页的**满足方式**不同 —— 两次相反的历史故障共同确定的口径。
+
+    - 用 `total_pages` 当分母又要求每页都有 OCR 产出 → 文本层页永远判不覆盖、白跑补漏轮次；
+    - 只把 `scanned` 计入分母 → 文本层页内容静默丢失却报覆盖完整（thread `69612125`：
+      26 页里 11 页文本层含 KRAS 基因检测报告，`IN-4-1` 因此被判「无法判断：缺基因检测报告」）。
+
+    正确口径：全部页进分母；`scanned` 缺 → 补派 OCR，`text` 缺 → 跑 `collect_text_pages.py` 归集。
+    """
     ws = _workspace(tmp_path, "B", [(1, "text"), (2, "text"), (3, "scanned"), (4, "scanned")])
     for i in (3, 4):
         (ws / "ocr" / "S1" / f"S1_page_{i:03d}.md").write_text("x", encoding="utf-8")
-    r = ocr_coverage.check(ws)
-    s = r["sources"][0]
-    assert (s["route"], s["need"], s["done"], s["covered"]) == ("B", 2, 2, True)
-    assert r["all_covered"] is True
+
+    s = ocr_coverage.check(ws)["sources"][0]
+    assert (s["route"], s["need"], s["done"], s["covered"]) == ("B", 4, 2, False)
+    assert s["need_scanned"] == 2 and s["need_text"] == 2
+    assert s["missing_scanned"] == [], "扫描页已全做完，不得再派 OCR"
+    assert s["missing_text"] == ["S1_page_001", "S1_page_002"]
+
+    # 归集文本层页后必须转为覆盖完整 —— 否则就退回了「永远判不覆盖」的老故障
+    for i in (1, 2):
+        (ws / "ocr" / "S1" / f"S1_page_{i:03d}.md").write_text("（来源文本层：…）\n\n正文\n", encoding="utf-8")
+    r2 = ocr_coverage.check(ws)
+    assert r2["sources"][0]["covered"] is True
+    assert r2["all_covered"] is True
 
 
 def test_route_b_reports_missing_pages(tmp_path: Path):

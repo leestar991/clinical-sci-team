@@ -11,10 +11,18 @@ pod = load("podcast-generation")
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    for k in ["VOLCENGINE_TTS_APPID", "VOLCENGINE_TTS_ACCESS_TOKEN", "VOLCENGINE_TTS_CLUSTER",
-              "MINIMAX_API_KEY", "PODCAST_GENERATION_PROVIDER", "MINIMAX_API_HOST",
-              "MINIMAX_TTS_MODEL", "MINIMAX_TTS_VOICE_MALE", "MINIMAX_TTS_VOICE_FEMALE",
-              "MINIMAX_TTS_MAX_RETRIES"]:
+    for k in [
+        "VOLCENGINE_TTS_APPID",
+        "VOLCENGINE_TTS_ACCESS_TOKEN",
+        "VOLCENGINE_TTS_CLUSTER",
+        "MINIMAX_API_KEY",
+        "PODCAST_GENERATION_PROVIDER",
+        "MINIMAX_API_HOST",
+        "MINIMAX_TTS_MODEL",
+        "MINIMAX_TTS_VOICE_MALE",
+        "MINIMAX_TTS_VOICE_FEMALE",
+        "MINIMAX_TTS_MAX_RETRIES",
+    ]:
         monkeypatch.delenv(k, raising=False)
     # never actually sleep during backoff in tests
     monkeypatch.setattr(pod.time, "sleep", lambda *_: None)
@@ -52,8 +60,7 @@ def test_minimax_tts_decodes_hex(monkeypatch):
     def fake_post(url, headers=None, json=None, **kw):
         captured["url"] = url
         captured["json"] = json
-        return FakeResp({"data": {"audio": b"audiobytes".hex(), "status": 2},
-                         "base_resp": {"status_code": 0}})
+        return FakeResp({"data": {"audio": b"audiobytes".hex(), "status": 2}, "base_resp": {"status_code": 0}})
 
     monkeypatch.setattr(pod.requests, "post", fake_post)
     out = pod.text_to_speech_minimax("hello", "male-qn-qingse")
@@ -82,14 +89,12 @@ def test_generate_podcast_minimax_end_to_end(monkeypatch, tmp_path):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
 
     def fake_post(url, headers=None, json=None, **kw):
-        return FakeResp({"data": {"audio": b"chunk".hex(), "status": 2},
-                         "base_resp": {"status_code": 0}})
+        return FakeResp({"data": {"audio": b"chunk".hex(), "status": 2}, "base_resp": {"status_code": 0}})
 
     monkeypatch.setattr(pod.requests, "post", fake_post)
     script = tmp_path / "s.json"
     script.write_text(
-        '{"title":"T","locale":"en","lines":[{"speaker":"male","paragraph":"a"},'
-        '{"speaker":"female","paragraph":"b"}]}',
+        '{"title":"T","locale":"en","lines":[{"speaker":"male","paragraph":"a"},{"speaker":"female","paragraph":"b"}]}',
         encoding="utf-8",
     )
     out = tmp_path / "o.mp3"
@@ -100,6 +105,7 @@ def test_generate_podcast_minimax_end_to_end(monkeypatch, tmp_path):
 
 def test_volcengine_tts_decodes_base64(monkeypatch):
     import base64
+
     monkeypatch.setenv("VOLCENGINE_TTS_APPID", "a")
     monkeypatch.setenv("VOLCENGINE_TTS_ACCESS_TOKEN", "t")
 
@@ -149,11 +155,13 @@ def _seq_post(responses):
 
 def test_minimax_retries_on_rate_limit_code(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
-    fake_post, calls = _seq_post([
-        FakeResp({"base_resp": {"status_code": 1002, "status_msg": "rate limit"}}),
-        FakeResp({"base_resp": {"status_code": 1039, "status_msg": "tpm limit"}}),
-        FakeResp({"data": {"audio": b"ok".hex()}, "base_resp": {"status_code": 0}}),
-    ])
+    fake_post, calls = _seq_post(
+        [
+            FakeResp({"base_resp": {"status_code": 1002, "status_msg": "rate limit"}}),
+            FakeResp({"base_resp": {"status_code": 1039, "status_msg": "tpm limit"}}),
+            FakeResp({"data": {"audio": b"ok".hex()}, "base_resp": {"status_code": 0}}),
+        ]
+    )
     monkeypatch.setattr(pod.requests, "post", fake_post)
     out = pod.text_to_speech_minimax("hi", "male-qn-qingse", max_retries=3)
     assert out == b"ok"
@@ -162,10 +170,12 @@ def test_minimax_retries_on_rate_limit_code(monkeypatch):
 
 def test_minimax_retries_on_http_429(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
-    fake_post, calls = _seq_post([
-        FakeResp({}, status_code=429),
-        FakeResp({"data": {"audio": b"ok".hex()}, "base_resp": {"status_code": 0}}),
-    ])
+    fake_post, calls = _seq_post(
+        [
+            FakeResp({}, status_code=429),
+            FakeResp({"data": {"audio": b"ok".hex()}, "base_resp": {"status_code": 0}}),
+        ]
+    )
     monkeypatch.setattr(pod.requests, "post", fake_post)
     out = pod.text_to_speech_minimax("hi", "male-qn-qingse", max_retries=3)
     assert out == b"ok"
@@ -174,10 +184,12 @@ def test_minimax_retries_on_http_429(monkeypatch):
 
 def test_minimax_no_retry_on_auth_error(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
-    fake_post, calls = _seq_post([
-        FakeResp({"base_resp": {"status_code": 1004, "status_msg": "auth failed"}}),
-        FakeResp({"data": {"audio": b"never".hex()}, "base_resp": {"status_code": 0}}),
-    ])
+    fake_post, calls = _seq_post(
+        [
+            FakeResp({"base_resp": {"status_code": 1004, "status_msg": "auth failed"}}),
+            FakeResp({"data": {"audio": b"never".hex()}, "base_resp": {"status_code": 0}}),
+        ]
+    )
     monkeypatch.setattr(pod.requests, "post", fake_post)
     out = pod.text_to_speech_minimax("hi", "male-qn-qingse", max_retries=3)
     assert out is None
@@ -186,9 +198,11 @@ def test_minimax_no_retry_on_auth_error(monkeypatch):
 
 def test_minimax_gives_up_after_max_retries(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "m")
-    fake_post, calls = _seq_post([
-        FakeResp({"base_resp": {"status_code": 1002, "status_msg": "rate limit"}}),
-    ])
+    fake_post, calls = _seq_post(
+        [
+            FakeResp({"base_resp": {"status_code": 1002, "status_msg": "rate limit"}}),
+        ]
+    )
     monkeypatch.setattr(pod.requests, "post", fake_post)
     out = pod.text_to_speech_minimax("hi", "male-qn-qingse", max_retries=2)
     assert out is None

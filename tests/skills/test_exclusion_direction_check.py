@@ -13,9 +13,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = (
-    REPO_ROOT / "skills" / "custom" / "eligibility-judgment" / "scripts" / "exclusion_direction_check.py"
-)
+SCRIPT_PATH = REPO_ROOT / "skills" / "custom" / "eligibility-judgment" / "scripts" / "exclusion_direction_check.py"
 
 if not SCRIPT_PATH.exists():  # skills/custom 为 gitignore 目录，清空检出时跳过
     pytest.skip("eligibility-judgment 技能未安装", allow_module_level=True)
@@ -78,7 +76,7 @@ def test_m016_four_inverted_exclusions_are_blocking():
 
 
 def test_negated_positive_words_do_not_flip_direction():
-    """"未见活动性感染"含"活动性"，不得被算作肯定证据而抵消否定信号。"""
+    """ "未见活动性感染"含"活动性"，不得被算作肯定证据而抵消否定信号。"""
     direction, basis, hits = checker.detect_direction("现有资料未见活动性感染诊断，HBsAg 阴性。")
     assert direction == "未触发"
     assert basis == "evidence"
@@ -178,9 +176,7 @@ def test_field_and_conclusion_aligned_passes():
 
 
 def test_direction_undeclared_is_advisory():
-    result = checker.check(
-        _judgments({"EX-7": {"conclusion": "符合", "reason": "头颅MRI报告已复核。"}})
-    )
+    result = checker.check(_judgments({"EX-7": {"conclusion": "符合", "reason": "头颅MRI报告已复核。"}}))
     assert result["conflicts"] == []
     assert result["advisories"] == ["EX-7"]
     assert _entry(result, "EX-7")["issue"] == "direction_undeclared"
@@ -245,9 +241,7 @@ def test_criteria_categories_drive_exclusion_scope():
 
 def test_cli_writes_report_and_exits_zero(tmp_path: Path):
     judgments_path = tmp_path / "judgments_draft.json"
-    judgments_path.write_text(
-        json.dumps(_judgments(M016_INVERTED), ensure_ascii=False), encoding="utf-8"
-    )
+    judgments_path.write_text(json.dumps(_judgments(M016_INVERTED), ensure_ascii=False), encoding="utf-8")
     out_path = tmp_path / "nested" / "exclusion_direction_check.json"
 
     code = checker.main(["--judgments", str(judgments_path), "--out", str(out_path)])

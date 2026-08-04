@@ -64,7 +64,7 @@ def test_no_image_endpoint_left_in_source():
     src = CLIENT_PATH.read_text(encoding="utf-8")
     # 仅允许出现在解释根因的注释/docstring 里，不得出现在 f-string 拼接的 leaf 变量中
     assert 'leaf = "image_to_markdown"' not in src
-    assert src.count("_MARKDOWN_LEAF = \"pdf_to_markdown\"") == 1
+    assert src.count('_MARKDOWN_LEAF = "pdf_to_markdown"') == 1
 
 
 # --- 失败语义（HTTP 200 + body code != 200）---------------------------------
@@ -105,9 +105,7 @@ async def test_body_code_40007_raises_textin_error(monkeypatch):
     captured = {}
     _patch(monkeypatch, {"code": 40007, "msg": "机器人不存在或未发布"}, captured)
     with pytest.raises(client.TextInError) as exc:
-        await client.parse_via_textin(
-            b"x", "页_001.jpg", app_id="a", secret_code="s", base_url="https://api.textin.com", timeout=5
-        )
+        await client.parse_via_textin(b"x", "页_001.jpg", app_id="a", secret_code="s", base_url="https://api.textin.com", timeout=5)
     assert "40007" in str(exc.value)
     assert captured["url"].endswith("pdf_to_markdown")
 
@@ -128,9 +126,7 @@ async def test_success_extracts_markdown_pages_and_html_tables(monkeypatch):
         },
     }
     _patch(monkeypatch, payload, captured)
-    doc = await client.parse_via_textin(
-        b"xy", "病历.pdf", app_id="a", secret_code="s", base_url="https://api.textin.com", timeout=5
-    )
+    doc = await client.parse_via_textin(b"xy", "病历.pdf", app_id="a", secret_code="s", base_url="https://api.textin.com", timeout=5)
     assert (doc.markdown, doc.pages, doc.parser) == ("# 病历", 3, "textin")
     assert doc.tables == ["<table>1</table>", "<table>2</table>"]  # 表格只在 structured 里
     assert captured["headers"]["x-ti-app-id"] == "a"
@@ -139,6 +135,4 @@ async def test_success_extracts_markdown_pages_and_html_tables(monkeypatch):
 @pytest.mark.asyncio
 async def test_missing_credentials_fail_fast(monkeypatch):
     with pytest.raises(client.TextInError, match="credentials"):
-        await client.parse_via_textin(
-            b"x", "a.jpg", app_id="", secret_code="s", base_url="https://api.textin.com", timeout=5
-        )
+        await client.parse_via_textin(b"x", "a.jpg", app_id="", secret_code="s", base_url="https://api.textin.com", timeout=5)

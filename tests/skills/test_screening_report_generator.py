@@ -2,6 +2,7 @@
 
 保证报告始终由技能模板渲染（历史故障：代理手写 HTML/CSS，产出样式与模板完全不同）。
 """
+
 import base64
 import importlib.util
 import json
@@ -35,10 +36,7 @@ def _png_bytes() -> bytes:
     """最小合法 1x1 PNG，避免测试依赖真实图片资源。"""
 
     def chunk(tag: bytes, data: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(data)) + tag + data
-            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        )
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
     idat = zlib.compress(b"\x00\xff\xff\xff")
@@ -85,9 +83,7 @@ def workspace(tmp_path: Path) -> Path:
         "汇总统计": {"子条件总数": 2},
         "描述索引": {"IN-2": "年龄", "EX-3": "活动性感染"},
     }
-    (outputs / "criteria_parsed.json").write_text(
-        json.dumps(criteria, ensure_ascii=False), encoding="utf-8"
-    )
+    (outputs / "criteria_parsed.json").write_text(json.dumps(criteria, ensure_ascii=False), encoding="utf-8")
 
     judgments = {
         "patient_id": "M001",
@@ -128,19 +124,21 @@ def workspace(tmp_path: Path) -> Path:
             }
         },
     }
-    (outputs / "judgments_M001.json").write_text(
-        json.dumps(judgments, ensure_ascii=False), encoding="utf-8"
-    )
+    (outputs / "judgments_M001.json").write_text(json.dumps(judgments, ensure_ascii=False), encoding="utf-8")
     return root
 
 
 def _build(root: Path, *extra: str) -> int:
     return builder.main(
         [
-            "--criteria", str(root / "outputs" / "criteria_parsed.json"),
-            "--judgments", str(root / "outputs" / "judgments_M001.json"),
-            "--workspace", str(root / "workspace"),
-            "--out-dir", str(root / "outputs"),
+            "--criteria",
+            str(root / "outputs" / "criteria_parsed.json"),
+            "--judgments",
+            str(root / "outputs" / "judgments_M001.json"),
+            "--workspace",
+            str(root / "workspace"),
+            "--out-dir",
+            str(root / "outputs"),
             *extra,
         ]
     )
@@ -230,11 +228,7 @@ def test_flat_judgments_structure_supported(workspace: Path):
 def test_verify_rejects_handwritten_html(workspace: Path):
     """手写 HTML 覆盖产出时，校验必须失败（本次故障的直接回归点）。"""
     _build(workspace)
-    handwritten = (
-        "<!DOCTYPE html><html><head><style>body{background:#f5f7fb}"
-        ".badge.maybe{background:#fef3c7}</style></head>"
-        "<body><table><tr><td>IN-2-1</td><td>符合</td></tr></table></body></html>"
-    )
+    handwritten = "<!DOCTYPE html><html><head><style>body{background:#f5f7fb}.badge.maybe{background:#fef3c7}</style></head><body><table><tr><td>IN-2-1</td><td>符合</td></tr></table></body></html>"
     (workspace / "outputs" / "screening_report.html").write_text(handwritten, encoding="utf-8")
     assert builder.main(["--verify", "--out-dir", str(workspace / "outputs")]) == 1
 
