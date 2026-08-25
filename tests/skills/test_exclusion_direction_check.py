@@ -33,7 +33,7 @@ checker = _load_module()
 def _judgments(judgments: dict, patient_id: str = "M016_ZALO") -> dict:
     return {
         "patient_id": patient_id,
-        "documents": {"doc": {"doc_label": "病历", "judgments": judgments}},
+        "judgments": judgments,  # 统一证据源判定产物：顶层 judgments
     }
 
 
@@ -219,8 +219,8 @@ def test_criteria_categories_drive_exclusion_scope():
     """条件ID 不以 EX 开头时，按 criteria_parsed.json 的排除类目识别。"""
     criteria = {
         "四分类": {
-            "可从病例获取-入选": [{"条件ID": "C-01"}],
-            "可从病例获取-排除": [{"条件ID": "C-02"}],
+            "可从病例获取-入选": {"C-01": {"条件ID": "C-01"}},
+            "可从病例获取-排除": {"C-02": {"条件ID": "C-02"}},
         }
     }
     result = checker.check(
