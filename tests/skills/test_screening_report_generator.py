@@ -225,6 +225,47 @@ def test_flat_judgments_structure_supported(workspace: Path):
     assert doc["cnt"]["不符合"] == 1
 
 
+def test_unified_top_level_judgments_are_first_class(workspace: Path, capsys):
+    """统一判定产物(顶层 judgments,无 documents)为第一公民输入:doc 键取 patient_id、
+    顶层 criteria_rollup 直接作主条件结论,无任何 fallback/降级告警。"""
+    path = workspace / "outputs" / "judgments_M001.json"
+    payload = {
+        "patient_id": "M003",
+        "patient_name": "王五",
+        "judgment_date": "2026-08-25",
+        "judgments": {
+            "IN-2-1": {"conclusion": "符合", "reason": "年龄 40 岁。", "evidence": []},
+            "EX-3": {"conclusion": "存疑", "reason": "未查见明确活动性感染。", "evidence": []},
+        },
+        "summary": {"符合": 1, "不符合": 0, "存疑": 1, "无法判断": 0},
+        "criteria_rollup": {
+            "IN-2": {
+                "conclusion": "符合", "rule": "单条", "members": ["IN-2-1"], "decided_by": ["IN-2-1"],
+                "counts": {"符合": 1, "不符合": 0, "存疑": 0, "无法判断": 0},
+            },
+            "EX-3": {
+                "conclusion": "存疑", "rule": "单条", "members": ["EX-3"], "decided_by": ["EX-3"],
+                "counts": {"符合": 0, "不符合": 0, "存疑": 1, "无法判断": 0},
+            },
+        },
+        "rollup_summary": {"符合": 1, "不符合": 0, "存疑": 1, "无法判断": 0},
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    assert _build(workspace) == 0
+    err = capsys.readouterr().err
+    assert "缺 `criteria_rollup`" not in err, "第一公民路径不得触发降级告警"
+    assert builder.main(["--verify", "--out-dir", str(workspace / "outputs")]) == 0
+    data = _data_of(workspace / "outputs" / "screening_report.html")
+    (doc_key, doc), = data["docs"].items()
+    assert doc_key == "M003", "第一公民路径 doc 键取 patient_id"
+    assert "王五" in doc["标签"], "标签取 patient_name"
+    assert doc["J"]["IN-2-1"]["结论"] == "符合"
+    assert doc["R"]["IN-2"]["结论"] == "符合"
+    assert doc["R"]["EX-3"]["结论"] == "存疑"
+    assert data["merged"]["IN-2-1"]["结论"] == "符合"
+    assert data["merged"]["EX-3"]["结论"] == "存疑"
+
+
 def test_verify_rejects_handwritten_html(workspace: Path):
     """手写 HTML 覆盖产出时，校验必须失败（本次故障的直接回归点）。"""
     _build(workspace)
