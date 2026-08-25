@@ -49,7 +49,7 @@ def dump(path: Path, payload) -> Path:
 
 def write_pack(ws: Path, track: str, cids: list[str]):
     cat = "排除_可从病例获取" if track == "EX" else "入选_可从病例获取"
-    dump(ws / f"criteria_judge_{track}.json", {"条件数": len(cids), "四分类": {cat: [{"条件ID": c} for c in cids]}})
+    dump(ws / f"criteria_judge_{track}.json", {"条件数": len(cids), "四分类": {cat: {c: {"条件ID": c} for c in cids}}})
 
 
 def ex_entry(concl: str, reason: str = "r", *, trig: bool | None = None):
@@ -62,6 +62,7 @@ def ex_entry(concl: str, reason: str = "r", *, trig: bool | None = None):
 
 
 def write_judgments(ws: Path, track: str, judgments: dict, *, doc: str = "medical_record", stage: str = "draft"):
+    # 统一证据源判定产物：顶层 `judgments`，无 documents 维度（doc 参数保留仅供旧用例兼容命名）
     counts = dict.fromkeys(("符合", "不符合", "存疑", "无法判断"), 0)
     for e in judgments.values():
         if isinstance(e, dict) and e.get("conclusion") in counts:
@@ -69,7 +70,7 @@ def write_judgments(ws: Path, track: str, judgments: dict, *, doc: str = "medica
     stem = "judgments_draft" if stage == "draft" else "judgments"
     return dump(
         pdir(ws) / f"{stem}_{PATIENT}_{track}.json",
-        {"patient_id": PATIENT, "documents": {doc: {"judgments": judgments, "summary": counts}}},
+        {"patient_id": PATIENT, "judgments": judgments, "summary": counts},
     )
 
 
@@ -123,15 +124,15 @@ def test_gate1_invalid_json(tmp_path):
     assert any("闸1" in p and "JSON 不合法" in p for p in probs(tmp_path, "EX"))
 
 
-def test_gate1_missing_documents(tmp_path):
+def test_gate1_missing_judgments(tmp_path):
     dump(pdir(tmp_path) / f"judgments_draft_{PATIENT}_EX.json", {"patient_id": PATIENT})
-    assert any("缺少非空 `documents`" in p for p in probs(tmp_path, "EX"))
+    assert any("缺少非空 `judgments`" in p for p in probs(tmp_path, "EX"))
 
 
 def test_gate1_all_judgments_empty(tmp_path):
     dump(
         pdir(tmp_path) / f"judgments_draft_{PATIENT}_EX.json",
-        {"patient_id": PATIENT, "documents": {"a": {"judgments": {}, "summary": {}}}},
+        {"patient_id": PATIENT, "judgments": {}, "summary": {}},
     )
     assert any("判定未产出" in p for p in probs(tmp_path, "EX"))
 
@@ -144,14 +145,18 @@ def test_gate2_detects_missing_condition(tmp_path):
     write_pack(tmp_path, "EX", ["EX-1", "EX-2", "EX-3"])
     write_judgments(tmp_path, "EX", {c: ex_entry("符合") for c in ("EX-1", "EX-2")})
     write_gates(tmp_path, "EX")
-    assert any("闸2" in p and "缺失条件ID：['EX-3']" in p for p in probs(tmp_path, "EX"))
+    found = probs(tmp_path, "EX")
+    assert any("闸2" in p and "缺失条件ID" in p and "['EX-3']" in p for p in found), found
+    # 不带 --batch 时口径必须是整轨（分批口径由 test_batch_scope_* 覆盖）
+    assert cjs.check(tmp_path, PATIENT, "EX", "draft", None, False)["闸2口径"] == "整轨标准包"
 
 
 def test_gate2_detects_extra_condition(tmp_path):
     write_pack(tmp_path, "EX", ["EX-1"])
     write_judgments(tmp_path, "EX", {"EX-1": ex_entry("符合"), "IN-5": ex_entry("符合")})
     write_gates(tmp_path, "EX")
-    assert any("标准包外条件ID：['IN-5']" in p and "跨轨污染" in p for p in probs(tmp_path, "EX"))
+    found = probs(tmp_path, "EX")
+    assert any("['IN-5']" in p and "跨轨污染" in p for p in found), found
 
 
 def test_gate2_skipped_without_pack(tmp_path):
@@ -163,7 +168,7 @@ def test_gate2_skipped_without_pack(tmp_path):
 
 
 def test_gate2_notes_declared_count_mismatch(tmp_path):
-    dump(tmp_path / "criteria_judge_EX.json", {"条件数": 99, "四分类": {"排除_可从病例获取": [{"条件ID": "EX-1"}]}})
+    dump(tmp_path / "criteria_judge_EX.json", {"条件数": 99, "四分类": {"排除_可从病例获取": {"EX-1": {"条件ID": "EX-1"}}}})
     write_judgments(tmp_path, "EX", {"EX-1": ex_entry("符合")})
     write_gates(tmp_path, "EX")
     r = cjs.check(tmp_path, PATIENT, "EX", "draft", None, False)
@@ -233,12 +238,8 @@ def test_gate5_detects_summary_mismatch(tmp_path):
         pdir(tmp_path) / f"judgments_draft_{PATIENT}_IN.json",
         {
             "patient_id": PATIENT,
-            "documents": {
-                "rec": {
-                    "judgments": {"IN-1": {"conclusion": "符合", "reason": "r"}},
-                    "summary": {"符合": 9, "不符合": 9, "存疑": 0, "无法判断": 0},
-                }
-            },
+            "judgments": {"IN-1": {"conclusion": "符合", "reason": "r"}},
+            "summary": {"符合": 9, "不符合": 9, "存疑": 0, "无法判断": 0},
         },
     )
     write_gates(tmp_path, "IN")
@@ -359,46 +360,39 @@ def test_snapshot_excludes_evidence_body(tmp_path):
     assert set(next(iter(base.values()))) == {"conclusion", "exclusion_triggered", "reason"}
 
 
-# ─────────────────── 闸 9：document 键等于真实 OCR 来源 ───────────────────
+# ─────────────────── 闸 9：evidence source 必须属于真实 OCR 来源集合 ───────────────────
 
 
-def test_gate9_detects_self_invented_document_key(tmp_path):
-    """thread 345f2bf4：IN 轨写 combined_ocr、EX 轨写 screening_bundle，合并成两个假文档。"""
+def test_gate9_rejects_evidence_source_not_in_ocr_sources(tmp_path):
+    """evidence[].source 自创（如 combined_ocr）→ 拦。物料维度唯一存活点，必须逐字等于真实来源名。"""
     write_phase2(tmp_path, ["筛选期病历", "筛选期检查"])
     write_pack(tmp_path, "IN", ["IN-1"])
-    write_judgments(tmp_path, "IN", {"IN-1": {"conclusion": "符合", "reason": "r"}}, doc="combined_ocr")
+    write_judgments(
+        tmp_path,
+        "IN",
+        {"IN-1": {"conclusion": "符合", "reason": "r", "evidence": [{"source": "combined_ocr", "page": 1, "quote": "q"}]}},
+    )
     write_gates(tmp_path, "IN")
     hits = [p for p in probs(tmp_path, "IN") if "闸9" in p]
-    assert hits and "combined_ocr" in hits[0] and "筛选期病历" in hits[0]
+    assert hits and "combined_ocr" in hits[0]
 
 
-def test_gate9_passes_when_keys_match_sources(tmp_path):
+def test_gate9_passes_when_sources_are_known(tmp_path):
+    """evidence 的 source 全部取自真实 OCR 来源集合 → 过。"""
     write_phase2(tmp_path, ["筛选期病历", "筛选期检查"])
     write_pack(tmp_path, "IN", ["IN-1"])
-    entry = {"IN-1": {"conclusion": "符合", "reason": "r"}}
-    dump(
-        pdir(tmp_path) / f"judgments_draft_{PATIENT}_IN.json",
-        {
-            "patient_id": PATIENT,
-            "documents": {d: {"judgments": entry, "summary": {"符合": 1, "不符合": 0, "存疑": 0, "无法判断": 0}} for d in ("筛选期病历", "筛选期检查")},
-        },
+    write_judgments(
+        tmp_path,
+        "IN",
+        {"IN-1": {"conclusion": "符合", "reason": "r", "evidence": [{"source": "筛选期病历", "page": 1, "quote": "q"}]}},
     )
     write_gates(tmp_path, "IN")
     assert probs(tmp_path, "IN") == []
 
 
-def test_gate9_detects_partial_key_set(tmp_path):
-    """只判了一份来源、漏了另一份，也必须拦住。"""
-    write_phase2(tmp_path, ["筛选期病历", "筛选期检查"])
-    write_pack(tmp_path, "IN", ["IN-1"])
-    write_judgments(tmp_path, "IN", {"IN-1": {"conclusion": "符合", "reason": "r"}}, doc="筛选期病历")
-    write_gates(tmp_path, "IN")
-    assert any("闸9" in p for p in probs(tmp_path, "IN"))
-
-
 def test_gate9_skipped_without_phase2_summary(tmp_path):
     write_pack(tmp_path, "IN", ["IN-1"])
-    write_judgments(tmp_path, "IN", {"IN-1": {"conclusion": "符合", "reason": "r"}}, doc="whatever")
+    write_judgments(tmp_path, "IN", {"IN-1": {"conclusion": "符合", "reason": "r"}})
     write_gates(tmp_path, "IN")
     r = cjs.check(tmp_path, PATIENT, "IN", "draft", None, False)
     assert r["problems"] == []
@@ -408,7 +402,7 @@ def test_gate9_skipped_without_phase2_summary(tmp_path):
 def test_gate9_skipped_when_ocr_results_empty(tmp_path):
     write_phase2(tmp_path, [])
     write_pack(tmp_path, "IN", ["IN-1"])
-    write_judgments(tmp_path, "IN", {"IN-1": {"conclusion": "符合", "reason": "r"}}, doc="x")
+    write_judgments(tmp_path, "IN", {"IN-1": {"conclusion": "符合", "reason": "r"}})
     write_gates(tmp_path, "IN")
     r = cjs.check(tmp_path, PATIENT, "IN", "draft", None, False)
     assert r["problems"] == []
@@ -438,6 +432,126 @@ def test_gate_artifact_records_failure_and_digest_change(tmp_path):
     cjs.main(["--workspace", str(tmp_path), "--patient", PATIENT, "--track", "EX"])
     second = json.loads((pdir(tmp_path) / f"judgment_structure_gate_{PATIENT}_EX.json").read_text(encoding="utf-8"))
     assert first["content_sha256_16"] != second["content_sha256_16"]
+
+
+# ─────────────── evidence 必须是数组（闸12）───────────────
+#
+# 真实故障（thread `dfbb4554`，患者 M018）：IN 轨 26 条 evidence **全是对象**
+#     {"年龄": {"value": "62岁", "source": ..., "page": 1, "screenshot_ref": ..., "context": ...}}
+# 而 EX 轨 37 条全是数组
+#     [{"source": ..., "page": 1, "screenshot_ref": ..., "quote": ..., "relevance": ...}]
+# 结构闸 exit_code=0 / problems=[] 完全放过——闸 3 只校验条目是 dict 且 conclusion 合法，
+# 对 evidence 类型零检查。
+#
+# 后果是**静默丢证据**：`build_reports.py` 的
+#     evidence = pick(item, "证据", "evidence", default=[]) or []
+#     "证据": [normalize_evidence(e, ...) for e in evidence if isinstance(e, dict)]
+# 对 dict 迭代拿到的是**键名字符串**，`isinstance(e, dict)` 全为 False，列表推导恒得 []，
+# 模板 `item.证据||[]` 于是渲染成 "—"。报告不报错、不缺条目，只是证据栏全空，
+# 肉眼极难发现——正是本技能反复出事的静默失败模式。
+
+
+def evidence_entry(concl: str, evidence) -> dict:
+    return {"conclusion": concl, "reason": "r", "evidence": evidence}
+
+
+def test_evidence_as_object_is_blocking(tmp_path):
+    """复现 dfbb4554：evidence 写成对象形态 → 必须阻断。"""
+    write_pack(tmp_path, "IN", ["IN-2-1"])
+    write_gates(tmp_path, "IN")
+    write_judgments(
+        tmp_path,
+        "IN",
+        {
+            "IN-2-1": evidence_entry(
+                "符合",
+                {"年龄": {"value": "62岁", "source": "M018", "page": 1, "context": "记载「年龄：62岁」"}},
+            )
+        },
+    )
+    msgs = [m for m in probs(tmp_path, "IN") if "闸12" in m]
+    assert msgs, "evidence 为对象必须阻断——否则报告静默丢证据"
+    assert "IN-2-1" in msgs[0]
+    assert "数组" in msgs[0] or "list" in msgs[0]
+
+
+def test_evidence_as_empty_object_is_blocking(tmp_path):
+    """`evidence: {}` 与 `evidence: []` 语义不同：前者是形态错误，不能当成"无证据"放过。"""
+    write_pack(tmp_path, "IN", ["IN-1"])
+    write_gates(tmp_path, "IN")
+    write_judgments(tmp_path, "IN", {"IN-1": evidence_entry("无法判断", {})})
+    assert [m for m in probs(tmp_path, "IN") if "闸12" in m]
+
+
+def test_evidence_as_string_is_blocking(tmp_path):
+    write_pack(tmp_path, "IN", ["IN-2-1"])
+    write_gates(tmp_path, "IN")
+    write_judgments(tmp_path, "IN", {"IN-2-1": evidence_entry("符合", "病历记载年龄62岁")})
+    assert [m for m in probs(tmp_path, "IN") if "闸12" in m]
+
+
+def test_evidence_array_of_objects_passes(tmp_path):
+    write_pack(tmp_path, "IN", ["IN-2-1"])
+    write_gates(tmp_path, "IN")
+    write_judgments(
+        tmp_path,
+        "IN",
+        {"IN-2-1": evidence_entry("符合", [{"source": "M018", "page": 1, "quote": "年龄：62岁"}])},
+    )
+    assert [m for m in probs(tmp_path, "IN") if "闸12" in m] == []
+
+
+def test_empty_evidence_array_passes(tmp_path):
+    """空数组是合法形态（原则七 B 另有"不得空 evidence"的语义要求，不由本闸管）。"""
+    write_pack(tmp_path, "IN", ["IN-1"])
+    write_gates(tmp_path, "IN")
+    write_judgments(tmp_path, "IN", {"IN-1": evidence_entry("无法判断", [])})
+    assert [m for m in probs(tmp_path, "IN") if "闸12" in m] == []
+
+
+def test_missing_evidence_key_is_not_gate12(tmp_path):
+    """缺 evidence 键不是形态错误（由原则七 B 的语义要求管），闸12 不重复报。"""
+    write_pack(tmp_path, "IN", ["IN-1"])
+    write_gates(tmp_path, "IN")
+    write_judgments(tmp_path, "IN", {"IN-1": {"conclusion": "无法判断", "reason": "r"}})
+    assert [m for m in probs(tmp_path, "IN") if "闸12" in m] == []
+
+
+def test_array_containing_non_objects_is_blocking(tmp_path):
+    """数组元素必须是对象——字符串元素会被 build_reports 的 isinstance 过滤掉，同样静默丢证据。"""
+    write_pack(tmp_path, "IN", ["IN-2-1"])
+    write_gates(tmp_path, "IN")
+    write_judgments(tmp_path, "IN", {"IN-2-1": evidence_entry("符合", ["年龄62岁", {"page": 1, "quote": "q"}])})
+    msgs = [m for m in probs(tmp_path, "IN") if "闸12" in m]
+    assert msgs
+    assert "IN-2-1" in msgs[0]
+
+
+def test_ex_track_object_evidence_also_blocking(tmp_path):
+    """两轨同一口径——本次是 IN 轨出错，EX 轨同样要拦。"""
+    write_pack(tmp_path, "EX", ["EX-1-1"])
+    write_gates(tmp_path, "EX")
+    write_judgments(tmp_path, "EX", {"EX-1-1": {"conclusion": "符合", "reason": "r", "evidence": {"a": 1}, "exclusion_triggered": False}})
+    assert [m for m in probs(tmp_path, "EX") if "闸12" in m]
+
+
+def test_gate12_names_every_offending_condition(tmp_path):
+    """26 条全错时要能一次看清范围，不是逐条刷屏。"""
+    write_pack(tmp_path, "IN", ["IN-1", "IN-2-1", "IN-2-2"])
+    write_gates(tmp_path, "IN")
+    write_judgments(
+        tmp_path,
+        "IN",
+        {
+            "IN-1": evidence_entry("无法判断", {}),
+            "IN-2-1": evidence_entry("符合", {"年龄": {"value": "62岁"}}),
+            "IN-2-2": evidence_entry("符合", [{"page": 1, "quote": "男"}]),
+        },
+    )
+    msgs = [m for m in probs(tmp_path, "IN") if "闸12" in m]
+    assert len(msgs) == 1, "应汇总成一条，而不是每条一行"
+    assert "IN-1" in msgs[0] and "IN-2-1" in msgs[0]
+    assert "IN-2-2" not in msgs[0], "合法条目不得被点名"
 
 
 # ─────────────────── CLI / 退出码 / stage ───────────────────
@@ -477,3 +591,183 @@ def test_summary_blocks_downstream(tmp_path):
     text = cjs.summarize([cjs.check(tmp_path, PATIENT, "EX", "draft", None, False)])
     assert "禁止发 task(quality-control)" in text
     assert "禁止进入合并汇总" in text
+
+
+# ── 闸 2 的批次口径（会话 09eeaffb 分批判定）──────────────────────────────────
+#
+# 整轨一次派时两个判定子代理各跑 99 个 AI 回合、0 次 write_file，撞满 recursion_limit=420
+# （10.02M token、零产物）。判定改为轨内 12 条一批后，批级 draft 只含本批条目，
+# 若闸 2 仍按整轨核，每一批都会被报「缺 16 条」——正确的批也过不去，
+# 而子代理修这个"缺失"的唯一办法就是去判别批的条目（正是模板第 0 条禁止的）。
+#
+# 关键性质：收窄口径 ≠ 放宽校验。本批漏一条、或顺手判了别批的条目，同样 exit 2。
+
+
+def write_batch_plan(ws: Path, track: str, batches: list[list[str]]) -> Path:
+    return dump(
+        pdir(ws) / f"judge_batches_{PATIENT}_{track}.json",
+        {
+            "patient_id": PATIENT,
+            "track": track,
+            "batch_size": 12,
+            "batch_count": len(batches),
+            "batches": [
+                {"batch": i + 1, "condition_ids": ids, "count": len(ids), "draft_file": f"judgments_draft_{PATIENT}_{track}_b{i + 1}.json"}
+                for i, ids in enumerate(batches)
+            ],
+        },
+    )
+
+
+def write_batch_judgments(ws: Path, track: str, batch: int, judgments: dict, *, doc: str = "medical_record"):
+    counts = dict.fromkeys(("符合", "不符合", "存疑", "无法判断"), 0)
+    for e in judgments.values():
+        if isinstance(e, dict) and e.get("conclusion") in counts:
+            counts[e["conclusion"]] += 1
+    return dump(
+        pdir(ws) / f"judgments_draft_{PATIENT}_{track}_b{batch}.json",
+        {"patient_id": PATIENT, "judgments": judgments, "summary": counts},
+    )
+
+
+def write_batch_gates(ws: Path, track: str, batch: int, *, missed: list[str] | None = None, conflicts: list[str] | None = None):
+    dump(pdir(ws) / f"uncertain_recheck_{PATIENT}_{track}_b{batch}.json", {"suspected_missed": missed or []})
+    if track == "EX":
+        dump(pdir(ws) / f"exclusion_direction_check_{PATIENT}_EX_b{batch}.json", {"conflicts": conflicts or [], "advisories": []})
+
+
+IN_TRACK_IDS = [f"IN-{n}" for n in range(1, 25)]
+IN_BATCHES = [IN_TRACK_IDS[:12], IN_TRACK_IDS[12:]]
+
+
+def _setup_batch(ws: Path, batch: int, judged: list[str]):
+    write_pack(ws, "IN", IN_TRACK_IDS)
+    write_batch_plan(ws, "IN", IN_BATCHES)
+    write_batch_judgments(ws, "IN", batch, {c: {"conclusion": "符合", "reason": "r", "evidence": []} for c in judged})
+    write_batch_gates(ws, "IN", batch)
+
+
+def batch_probs(ws: Path, batch: int) -> list[str]:
+    return cjs.check(ws, PATIENT, "IN", "draft", None, False, batch=batch)["problems"]
+
+
+def test_batch_scope_passes_when_batch_is_complete(tmp_path):
+    """批级 draft 只含本批 12 条 —— 按批次口径应当全过（整轨口径会误报缺 12 条）。"""
+    _setup_batch(tmp_path, 1, IN_BATCHES[0])
+    assert batch_probs(tmp_path, 1) == []
+
+
+def test_batch_scope_still_catches_a_missing_condition_within_the_batch(tmp_path):
+    """收窄口径不等于放宽：本批漏一条照样 exit 2。"""
+    _setup_batch(tmp_path, 1, IN_BATCHES[0][:-1])
+    found = batch_probs(tmp_path, 1)
+    assert any("闸2" in p and "缺失条件ID" in p and IN_BATCHES[0][-1] in p for p in found), found
+
+
+def test_batch_scope_rejects_conditions_from_another_batch(tmp_path):
+    """顺手判了别批的条目 → 阻断（两个子代理会同时写同一批条目）。"""
+    _setup_batch(tmp_path, 1, [*IN_BATCHES[0], IN_BATCHES[1][0]])
+    found = batch_probs(tmp_path, 1)
+    assert any("闸2" in p and IN_BATCHES[1][0] in p and "不要顺手判" in p for p in found), found
+
+
+def test_batch_scope_reads_the_batch_level_draft_file(tmp_path):
+    """`--batch N` 必须去看 `_bN` 文件，不是整轨文件。"""
+    write_pack(tmp_path, "IN", IN_TRACK_IDS)
+    write_batch_plan(tmp_path, "IN", IN_BATCHES)
+    # 只有整轨文件存在，批级文件缺失 → 闸1 必须报缺文件
+    write_judgments(tmp_path, "IN", {c: {"conclusion": "符合", "reason": "r", "evidence": []} for c in IN_TRACK_IDS})
+    found = batch_probs(tmp_path, 1)
+    assert any("闸1" in p and f"_IN_b1.json" in p for p in found), found
+
+
+def test_batch_gate_artifacts_are_per_batch(tmp_path):
+    """闸产物也按批：用整轨产物核批级 draft 会把别批的漏判算到本批头上。"""
+    _setup_batch(tmp_path, 1, IN_BATCHES[0])
+    # 整轨产物报漏判、批级产物干净 → 批级检查应当只看批级产物（全过）
+    dump(pdir(tmp_path) / f"uncertain_recheck_{PATIENT}_IN.json", {"suspected_missed": IN_BATCHES[1][:1]})
+    assert batch_probs(tmp_path, 1) == []
+    # 反之，批级产物报漏判就必须阻断
+    write_batch_gates(tmp_path, "IN", 1, missed=[IN_BATCHES[0][0]])
+    assert any("闸6" in p for p in batch_probs(tmp_path, 1))
+
+
+def test_missing_batch_plan_is_blocking_not_silently_full_track(tmp_path):
+    """读不到批次清单时必须报错，⛔ 不得静默退回整轨口径（那会误报缺失）。"""
+    write_pack(tmp_path, "IN", IN_TRACK_IDS)
+    write_batch_judgments(tmp_path, "IN", 1, {c: {"conclusion": "符合", "reason": "r", "evidence": []} for c in IN_BATCHES[0]})
+    write_batch_gates(tmp_path, "IN", 1)
+    found = batch_probs(tmp_path, 1)
+    assert any("闸2" in p and "读不到批次清单" in p and "plan-batches" in p for p in found), found
+
+
+def test_unknown_batch_number_is_blocking(tmp_path):
+    """`--batch` 与清单不是同一次规划 → 报错，不当成空集合（空集合会伪装成一堆越界条目）。"""
+    _setup_batch(tmp_path, 1, IN_BATCHES[0])
+    dump(pdir(tmp_path) / f"judgments_draft_{PATIENT}_IN_b9.json", json.loads((pdir(tmp_path) / f"judgments_draft_{PATIENT}_IN_b1.json").read_text(encoding="utf-8")))
+    dump(pdir(tmp_path) / f"uncertain_recheck_{PATIENT}_IN_b9.json", {"suspected_missed": []})
+    found = batch_probs(tmp_path, 9)
+    assert any("闸2" in p and "没有第 9 批" in p for p in found), found
+
+
+def test_batch_plan_with_ids_outside_the_pack_is_blocking(tmp_path):
+    """清单与标准包不是同一次产出（包被重新 slim 过）→ 报错。"""
+    write_pack(tmp_path, "IN", IN_TRACK_IDS)
+    write_batch_plan(tmp_path, "IN", [[*IN_BATCHES[0][:11], "IN-999"]])
+    write_batch_judgments(tmp_path, "IN", 1, {c: {"conclusion": "符合", "reason": "r", "evidence": []} for c in IN_BATCHES[0][:11]})
+    write_batch_gates(tmp_path, "IN", 1)
+    found = batch_probs(tmp_path, 1)
+    assert any("闸2" in p and "IN-999" in p and "不是同一次产出" in p for p in found), found
+
+
+def test_full_track_scope_catches_a_whole_missing_batch(tmp_path):
+    """⛔ 整轨口径不可省：只有它会因为**少了一整批**而报错。
+
+    批级闸各自只保证「本批完整」，没有任何一道闸会发现漏派了一整批 —— 除了合并后
+    以整轨口径重跑的这一次。
+    """
+    write_pack(tmp_path, "IN", IN_TRACK_IDS)
+    # 合并结果只含批 1（漏派了批 2）
+    write_judgments(tmp_path, "IN", {c: {"conclusion": "符合", "reason": "r", "evidence": []} for c in IN_BATCHES[0]})
+    write_gates(tmp_path, "IN")
+    found = probs(tmp_path, "IN")
+    assert any("闸2" in p and "缺失条件ID" in p for p in found), found
+    missing_reported = [p for p in found if "缺失条件ID" in p][0]
+    for cid in IN_BATCHES[1][:3]:
+        assert cid in missing_reported
+
+
+def test_batch_gate_artifact_does_not_overwrite_the_track_one(tmp_path):
+    """QC 前置读的是整轨那份闸产物，批级的不能覆盖它。"""
+    _setup_batch(tmp_path, 1, IN_BATCHES[0])
+    cjs.check(tmp_path, PATIENT, "IN", "draft", None, False, batch=1)
+    cjs.write_gate_artifact(tmp_path, cjs.check(tmp_path, PATIENT, "IN", "draft", None, False, batch=1))
+    batch_artifact = pdir(tmp_path) / f"judgment_structure_gate_{PATIENT}_IN_b1.json"
+    track_artifact = pdir(tmp_path) / f"judgment_structure_gate_{PATIENT}_IN.json"
+    assert batch_artifact.exists()
+    assert not track_artifact.exists(), "批级闸产物覆盖了整轨那份 —— QC 会把「某批过了」读成「整轨过了」"
+    assert json.loads(batch_artifact.read_text(encoding="utf-8"))["batch"] == 1
+
+
+def test_cli_rejects_batch_below_one(tmp_path):
+    _setup_batch(tmp_path, 1, IN_BATCHES[0])
+    with pytest.raises(SystemExit) as exc:
+        cjs.main(["--workspace", str(tmp_path), "--patient", PATIENT, "--track", "IN", "--batch", "0"])
+    assert exc.value.code == 2
+
+
+def test_cli_batch_flow_exit_codes(tmp_path):
+    _setup_batch(tmp_path, 1, IN_BATCHES[0])
+    argv = ["--workspace", str(tmp_path), "--patient", PATIENT, "--track", "IN", "--batch", "1"]
+    assert cjs.main(argv) == 0
+    write_batch_gates(tmp_path, "IN", 1, missed=[IN_BATCHES[0][0]])
+    assert cjs.main(argv) == 2
+
+
+def test_cli_accepts_explicit_batch_plan_path(tmp_path):
+    _setup_batch(tmp_path, 1, IN_BATCHES[0])
+    moved = tmp_path / "elsewhere" / "plan.json"
+    moved.parent.mkdir(parents=True)
+    moved.write_text((pdir(tmp_path) / f"judge_batches_{PATIENT}_IN.json").read_text(encoding="utf-8"), encoding="utf-8")
+    (pdir(tmp_path) / f"judge_batches_{PATIENT}_IN.json").unlink()
+    assert cjs.main(["--workspace", str(tmp_path), "--patient", PATIENT, "--track", "IN", "--batch", "1", "--batch-plan", str(moved)]) == 0
