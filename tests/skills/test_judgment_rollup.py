@@ -348,11 +348,24 @@ EXAMPLE_PATH = SCRIPT_PATH.parent.parent / "references" / "schema_example.json"
 
 
 def _example_rollups() -> list[tuple[str, str, dict, dict]]:
-    """[(doc_key, pid, entry, doc)]，跳过 `_示例说明` 这类注释键。"""
+    """[(doc_key, pid, entry, doc)]，跳过 `_示例说明` 这类注释键。
+
+    统一证据源形态（顶层 `criteria_rollup`，无 documents 维度）与历史多 documents
+    形态都支持；顶层形态的 doc_key 用 `patient_id`。
+    """
     import json
 
     data = json.loads(EXAMPLE_PATH.read_text(encoding="utf-8"))
     out = []
+    if isinstance(data.get("criteria_rollup"), dict):
+        doc = {
+            "criteria_rollup": data["criteria_rollup"],
+            "rollup_summary": data.get("rollup_summary"),
+        }
+        for pid, entry in data["criteria_rollup"].items():
+            if pid.startswith("_") or not isinstance(entry, dict):
+                continue
+            out.append((str(data.get("patient_id", "doc")), pid, entry, doc))
     for doc_key, doc in (data.get("documents") or {}).items():
         for pid, entry in (doc.get("criteria_rollup") or {}).items():
             if pid.startswith("_") or not isinstance(entry, dict):
