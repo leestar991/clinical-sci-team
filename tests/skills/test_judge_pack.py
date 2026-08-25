@@ -775,7 +775,7 @@ def test_slim_pack_is_accepted_by_direction_and_recheck_gates(tmp_path: Path):
     ex_pack = pack.slim_track(EX_CRITERIA, "EX")
     judgments = {
         "patient_id": "P1",
-        "documents": {"doc": {"judgments": {"EX-15": {"conclusion": "不符合", "reason": "HBsAg 阴性，未见活动性肝炎。"}}}},
+        "judgments": {"EX-15": {"conclusion": "不符合", "reason": "HBsAg 阴性，未见活动性肝炎。"}},
     }
     result = edc.check(judgments, ex_pack)
     assert result["conflicts"] == ["EX-15"]
@@ -792,7 +792,7 @@ def test_slim_pack_is_accepted_by_direction_and_recheck_gates(tmp_path: Path):
     ocr.write_text("来源图片：/x/筛选期病历_page_001.jpg\n患者年龄 72 岁，男性。\n", encoding="utf-8")
     in_judgments = {
         "patient_id": "P1",
-        "documents": {"doc": {"judgments": {"IN-2-1": {"conclusion": "无法判断", "reason": "未提及年龄。"}}}},
+        "judgments": {"IN-2-1": {"conclusion": "无法判断", "reason": "未提及年龄。"}},
     }
     recheck = ucr.recheck(in_pack, in_judgments, [ocr])
     assert recheck["suspected_missed"] == ["IN-2-1"], "精简包应保留 同义词，使兜底闸能命中 OCR 原文"
