@@ -132,9 +132,13 @@ BASELINE = {
 #     upstream 破例核实、QC 报脚本缺陷时修脚本与派修订并发（含 skill_manage patch 前置）。
 #     SOUL 原则5 压为骨架+双域指针；判定部分经核已在 eligibility-judgment SKILL（无增量）。
 #     全为硬规则与处置流程，三项纪律同前。
+#   - eligibility-judgment 32_600 → 34_000（2026-08-26，SOUL 原则8 P3-prep 下沉）：新增
+#     「P3-prep」节——plan-batches ×2 + render ×2 机械单次 bash 块。命令按真实 CLI 修正
+#     （SOUL 旧版 render 缺 --judgment-date/--track、--doc-key 缺「来源名=」前缀）。
+#     机械命令块非叙述；三项纪律同前。
 MAX_BYTES = {
     "criteria-parser": 19_000,
-    "eligibility-judgment": 32_600,
+    "eligibility-judgment": 34_000,
 }
 
 # 按需加载的规则文件也要有上限：判定子代理会**整篇**读它，无上限就会重新长成一本书。
