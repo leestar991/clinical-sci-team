@@ -93,6 +93,9 @@ SUNK_FROM_SOUL: dict[str, str] = {
     "uncertain_recheck.py --criteria": "eligibility-judgment（references/judge-delegation.md）",
     "exclusion_direction_check.py --judgments": "eligibility-judgment（references/judge-delegation.md 与 qc-delegation.md）",
     "取证索引": "eligibility-judgment（原 SOUL 原则 10 整块下沉）",
+    # 2026-08-26 · P2 解析编排下沉(parse-orchestration.md + render/summary 脚本)
+    "criteria_qc_bundle.py \\": "criteria-parser（取证包装配命令，parse-orchestration.md）",
+    "ocr_md_count": "criteria-parser（phase2_summary 字段清单，write_phase2_summary.py）",
     # Task 7 · screening-report-generator
     "build_reports.py \\": "screening-report-generator（构建/校验命令）",
 }
@@ -912,7 +915,8 @@ def test_soul_gives_a_criterion_for_spotting_a_false_positive():
 
 def test_phase2_qc_loop_also_carries_the_concurrent_handling():
     """规则要长在流程里，不只长在原则清单里 —— 主代理在 QC 循环那一步才需要它。"""
-    loop = SOUL.split("修订（仅当", 1)[1][:1600]
+    # 2026-08-26 重构:循环五步细节下沉 parse-orchestration.md,SOUL 锚点改为调度句
+    loop = SOUL.split("QC↔修订循环推进该轨", 1)[1][:600]
     assert "并发" in loop, "Phase 2 QC 循环未提示并发处理脚本缺陷"
     assert "patch" in loop, "Phase 2 QC 循环未给出修脚本的工具"
 
