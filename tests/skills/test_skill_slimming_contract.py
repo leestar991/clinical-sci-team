@@ -127,8 +127,13 @@ BASELINE = {
 #     4.3 双轨与修复执行 / 4.4 切包与收尾），SOUL Phase 2 段 40→14 行（只留 todos、
 #     指针、并发处理脚本缺陷的编排决策一句、出口屏障）。内联为编排判据与禁令，
 #     非叙述；三项纪律同前（⛔ 上升 / 零 thread ID / 零叙述回流）。
+#   - criteria-parser 17_000 → 19_000（2026-08-26，SOUL 原则5 criteria 部分下沉）：§2.2 增补
+#     达上限两态处置与触顶五步（冻结/两轨定局一次 ask_clarification 三选一/P3 屏障）、
+#     upstream 破例核实、QC 报脚本缺陷时修脚本与派修订并发（含 skill_manage patch 前置）。
+#     SOUL 原则5 压为骨架+双域指针；判定部分经核已在 eligibility-judgment SKILL（无增量）。
+#     全为硬规则与处置流程，三项纪律同前。
 MAX_BYTES = {
-    "criteria-parser": 17_000,
+    "criteria-parser": 19_000,
     "eligibility-judgment": 32_600,
 }
 

@@ -80,6 +80,8 @@ SUNK_FROM_SOUL: dict[str, str] = {
     "ocr_coverage.py \\": "pdf-image-extractor（覆盖率门禁命令）",
     "parse_document 调用铁律": "pdf-image-extractor（技能是执行规则唯一权威）",
     "在途 OCR 子任务 ≤ 2": "pdf-image-extractor（编排边界，SKILL「预处理与编排」）",
+    "首检 1 轮 + 复检 2 轮": "criteria-parser 与 eligibility-judgment 各自 SKILL（QC 轮次细则）",
+    "冻结该轨，两轨都定局后统一请示": "criteria-parser SKILL §2.2（criteria QC 触顶处置）",
     "一轮 ≤ 2-3 个": "pdf-image-extractor（parse_document 轮内限额）",
     "route_a_failed": "pdf-image-extractor（OCR 委派模板 references/ocr-delegation.md）",
     # Task 3 · criteria-parser
