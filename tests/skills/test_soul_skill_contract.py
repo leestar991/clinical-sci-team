@@ -79,6 +79,8 @@ SUNK_FROM_SOUL: dict[str, str] = {
     "pdf_to_image.py \\": "pdf-image-extractor（拆页命令）",
     "ocr_coverage.py \\": "pdf-image-extractor（覆盖率门禁命令）",
     "parse_document 调用铁律": "pdf-image-extractor（技能是执行规则唯一权威）",
+    "在途 OCR 子任务 ≤ 2": "pdf-image-extractor（编排边界，SKILL「预处理与编排」）",
+    "一轮 ≤ 2-3 个": "pdf-image-extractor（parse_document 轮内限额）",
     "route_a_failed": "pdf-image-extractor（OCR 委派模板 references/ocr-delegation.md）",
     # Task 3 · criteria-parser
     "eligibility_criteria_raw.md`；随后": "criteria-parser（章节提取与完整性自检）",
