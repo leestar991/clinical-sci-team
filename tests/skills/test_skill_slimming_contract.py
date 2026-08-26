@@ -121,8 +121,14 @@ BASELINE = {
 #     parsing-rules 唯一权威逐字对齐（抽句不转述防漂移）；样例/模板/故障仍在 references。
 #     三项纪律：全集 ⛔ 计数上升（硬规则密度高于旧版）、正文零 thread ID、
 #     故障叙述零回流（全部仍在 failure-archive.md）。
+#   - criteria-parser 15_000 → 17_000（2026-08-26，SOUL P2 再下沉）：用户要求把 P2 的
+#     拆分/QC/修复/合并流程与并发规则移入本技能。SKILL §4 扩为完整编排节（4.1 入口与
+#     路线 / 4.2 并发预算与调度[三轨共享 3、OCR≤2、滑动窗口、OCR 覆盖率门禁] /
+#     4.3 双轨与修复执行 / 4.4 切包与收尾），SOUL Phase 2 段 40→14 行（只留 todos、
+#     指针、并发处理脚本缺陷的编排决策一句、出口屏障）。内联为编排判据与禁令，
+#     非叙述；三项纪律同前（⛔ 上升 / 零 thread ID / 零叙述回流）。
 MAX_BYTES = {
-    "criteria-parser": 15_000,
+    "criteria-parser": 17_000,
     "eligibility-judgment": 32_600,
 }
 

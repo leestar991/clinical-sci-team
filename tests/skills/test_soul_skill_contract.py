@@ -915,10 +915,11 @@ def test_soul_gives_a_criterion_for_spotting_a_false_positive():
 
 def test_phase2_qc_loop_also_carries_the_concurrent_handling():
     """规则要长在流程里，不只长在原则清单里 —— 主代理在 QC 循环那一步才需要它。"""
-    # 2026-08-26 重构:循环五步细节下沉 parse-orchestration.md,SOUL 锚点改为调度句
-    loop = SOUL.split("QC↔修订循环推进该轨", 1)[1][:600]
-    assert "并发" in loop, "Phase 2 QC 循环未提示并发处理脚本缺陷"
-    assert "patch" in loop, "Phase 2 QC 循环未给出修脚本的工具"
+    # 2026-08-26 二次下沉:循环与调度细则均入 criteria-parser,SOUL 在 Phase 2 节保留
+    # 编排决策一句(并发处理 + skill_manage 工具)——它是主代理独有的派发决策。
+    p2 = SOUL.split("## Phase 2:", 1)[1].split("## Phase 2.5", 1)[0]
+    assert "并发" in p2, "Phase 2 节未提示并发处理脚本缺陷"
+    assert "patch" in p2, "Phase 2 节未给出修脚本的工具"
 
 
 def test_criteria_failure_archive_records_the_bundle_mapping_failure():
