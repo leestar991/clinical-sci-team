@@ -114,8 +114,15 @@ BASELINE = {
 #     ⚠️ 抬闸前该文件已是 14_384（超限 284 bytes，非本次引入；本次净增 200 bytes 已是
 #     规则+命令的最小表述）。三项纪律：全集 ⛔ 计数上升（新增 2 条禁令）、正文零 thread ID
 #     （叙述在 failure-archive.md「取证包段定位静默失败」）、正文只留判据与处置。
+#   - criteria-parser 14_650 → 15_000（2026-08-26，完整技能包重组）：用户要求 SKILL.md 自含
+#     拆分/质检/修复三域核心判据（此前是指针手册，一个执行者读 SKILL.md 仍要跳 3-4 份
+#     references 才能干活）。内联的是**判据与操作**（拆分判定流程/两类必拆 AND/或组枚举/
+#     阈值三档/结构闸 16 闸要点/按 type 处置表/中性化三选一/终点线纪律），措辞与
+#     parsing-rules 唯一权威逐字对齐（抽句不转述防漂移）；样例/模板/故障仍在 references。
+#     三项纪律：全集 ⛔ 计数上升（硬规则密度高于旧版）、正文零 thread ID、
+#     故障叙述零回流（全部仍在 failure-archive.md）。
 MAX_BYTES = {
-    "criteria-parser": 14_650,
+    "criteria-parser": 15_000,
     "eligibility-judgment": 32_600,
 }
 
@@ -413,15 +420,18 @@ def test_parsing_rules_live_in_the_parsing_reference(needle):
 
 
 def test_criteria_skill_points_at_every_moved_topic():
+    """2026-08-26 起规则核心内联进 SKILL.md(完整技能包),本测试守住的是「入口不丢」:
+    主题要么在内联正文、要么在 references 索引——措辞随结构演化,清单同步。"""
     body = _text(_skill("criteria-parser"))
     assert "parsing-rules.md" in body, "SKILL.md 未索引 parsing-rules.md"
-    for topic in ("四分类体系", "拆分原则", "条件ID 编号规则", "条件转化规则", "日期维度规则", "可获取性判定标准", "分片写入"):
-        assert topic in body, f"SKILL.md 的指向表缺「{topic}」，搬走的规则失去入口"
+    for topic in ("四分类体系", "拆分判定流程", "条件ID 编号", "转化条件", "日期维度", "不拆清单", "分片写入"):
+        assert topic in body, f"SKILL.md 缺「{topic}」，规则失去入口"
 
 
 def test_criteria_skill_is_now_an_orchestration_manual():
     body = _text(_skill("criteria-parser"))
-    for orchestration in ("章节提取与完整性自检", "双轨解析", "QC 校验", "QC 后修订"):
+    # 2026-08-26 完整技能包重组:编排四节并入 §0 输入/双轨拆分/质检/修复/编排与交付
+    for orchestration in ("章节提取与完整性自检", "双轨拆分", "质检", "修复", "编排与交付"):
         assert orchestration in body, f"SKILL.md 丢了编排内容：{orchestration}"
     assert "### 必须拆分（AND 关系）" not in body, "解析规则本体又长回 SKILL.md 了"
 

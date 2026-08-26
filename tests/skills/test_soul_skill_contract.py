@@ -794,7 +794,7 @@ def test_criteria_qc_bundle_script_exists():
 def test_criteria_skill_mandates_bundle_before_dispatching_qc():
     text = _read(CRITERIA_SKILL)
     assert "criteria_qc_bundle.py" in text
-    assert "不装配不许派 QC" in text, "缺硬前置，装配就会被跳过"
+    assert ("不装配不许派 QC" in text) or ("先装/每轮修订后重装取证包" in text), "缺硬前置，装配就会被跳过"
     # 会话 `c2518bc7` 证明「装配」不足以构成前置：两轨取证包都装配成功了，但 6 个 QC 子代理
     # 一次都没读到 —— 委派 prompt 的输入清单是白名单，漏写等于禁止读。硬前置必须同时覆盖交接。
     assert "照抄模板的输入清单" in text, "只要求装配、不要求照抄模板输入清单，装配收益会归零"
