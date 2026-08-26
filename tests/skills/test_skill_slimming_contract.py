@@ -427,7 +427,11 @@ def test_criteria_skill_is_now_an_orchestration_manual():
 
 
 def test_parse_delegation_gives_the_readable_path_to_the_rules():
-    """子代理 `skills=[]`，模板必须给 parsing-rules.md 的绝对路径，不能只指 SKILL.md。"""
+    """子代理 `skills=[]`，规则必须**到达**它。2026-08-26 起由 render 内嵌:模板带
+    {PARSING_RULES} 占位符,渲染时从 parsing-rules.md 抽节嵌入正文(881e7ba8:子代理
+    自读 34KB 全文,EX 重做前 4 步 ~200k token 学规则,写产物时上下文耗尽 → 占位符产物)。
+    模板本体仍保留路径引用供人读。"""
     body = _text(SKILLS / "criteria-parser" / "references" / "parse-delegation.md")
+    assert "{PARSING_RULES}" in body, "模板缺规则内嵌占位符(render 的注入点)"
     assert "/mnt/skills/custom/criteria-parser/references/parsing-rules.md" in body
     assert "SKILL.md（四分类体系" not in body, "模板仍把子代理指向整篇 SKILL.md"
