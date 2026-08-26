@@ -142,3 +142,53 @@ def test_dispatch_lines_on_stdout(ws: Path, capsys):
     assert _run(ws) == 0
     out = capsys.readouterr().out
     assert "prompt_file" in out and "parse_IN.md" in out and "parse_EX.md" in out
+
+
+# ────────────────────────── kind=qc / kind=repair ──────────────────────────
+
+
+@pytest.fixture()
+def gate_ok(ws: Path) -> Path:
+    gate = {"exit_code": 0, "total": 28, "problems": []}
+    (ws / "criteria_structure_gate_IN.json").write_text(json.dumps(gate, ensure_ascii=False), encoding="utf-8")
+    return ws
+
+
+def test_qc_renders_round_total_and_prev_block(gate_ok: Path):
+    """QC 委派:轮次/闸 total 机械注入(881e7ba8 的手填漂移点);第 2 轮起注入上一轮报告块。"""
+    assert _run(gate_ok, "--kind", "qc", "--track", "IN", "--round", "2") == 0
+    md = _out(gate_ok, "qc_IN_r2.md")
+    assert "第 2 轮" in md
+    assert "全部 28 条" in md
+    assert "criteria_qc_IN.json（上一轮报告" in md
+    assert "立即停止并返回" in md  # 前置自检(bundle/结构闸缺失即拒工)必须在渲染产物里
+
+
+def test_qc_round1_has_no_prev_report_block(gate_ok: Path):
+    assert _run(gate_ok, "--kind", "qc", "--track", "IN", "--round", "1") == 0
+    md = _out(gate_ok, "qc_IN_r1.md")
+    assert "上一轮报告" not in md
+    assert "{PREV_REPORT_BLOCK}" not in md
+
+
+def test_qc_requires_passed_gate(ws: Path):
+    """结构闸未过(exit_code=2)就渲染 QC = 白烧一轮(thread 345f2bf4)→ 拒绝。"""
+    gate = {"exit_code": 2, "total": 28, "problems": ["闸9 ['EX-3'] …"]}
+    (ws / "criteria_structure_gate_IN.json").write_text(json.dumps(gate, ensure_ascii=False), encoding="utf-8")
+    assert _run(ws, "--kind", "qc", "--track", "IN", "--round", "1") == 2
+
+
+def test_repair_renders_with_raw_lines_and_hard_rules(gate_ok: Path):
+    """修订委派:raw 行号注入 + apply_json_patches 硬规则逐字到达(9a83ccc9 同类防线)。"""
+    assert _run(gate_ok, "--kind", "repair", "--track", "IN", "--round", "2") == 0
+    md = _out(gate_ok, "repair_IN_r2.md")
+    assert "read_file(start_line=276, end_line=350)" in md
+    assert "apply_json_patches" in md and "一律禁止" in md
+    assert "criteria_parsed_IN.json" in md
+    for needle in ("{分片名}", "{start}", "{end}", "{TRACK}"):
+        assert needle not in md, f"repair_IN_r2.md 残留 {needle}"
+
+
+def test_qc_and_repair_require_round(gate_ok: Path):
+    assert _run(gate_ok, "--kind", "qc", "--track", "IN") == 2
+    assert _run(gate_ok, "--kind", "repair", "--track", "IN") == 2
