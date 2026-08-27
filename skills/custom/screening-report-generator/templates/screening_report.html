@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>入排标准 × 病历 · 比对判读</title>
+<style>
+  :root{
+    --bg:#f4f6f8;--card:#fff;--ink:#141b23;--muted:#6a7583;--faint:#95a0ad;
+    --line:#e4e8ed;--brand:#0f766e;
+    --inc:#0f766e;--inc-bg:#ecf6f4;--exc:#b4531b;--exc-bg:#fbefe5;
+    --ok:#12805c;--ok-bg:#e7f6ef;--no:#c0392b;--no-bg:#fdecea;
+    --may:#b8860b;--may-bg:#fbf2dc;--na:#95a0ad;--na-bg:#eef1f4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",Roboto,sans-serif}
+  header{background:var(--card);border-bottom:1px solid var(--line);padding:16px 24px}
+  header h1{margin:0 0 4px;font-size:18px;font-weight:800}
+  header .sub{color:var(--muted);font-size:13px}
+  header .meta{margin-top:6px;font-size:12px;color:var(--faint)}
+  .wrap{max-width:1400px;margin:0 auto;padding:16px 24px 64px}
+
+  .warning-banner{background:#fef3cd;border:1px solid #ffc107;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#664d03;display:none}
+  .warning-banner.show{display:block}
+
+  .doc-summary{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--card);
+    border:1px solid var(--line);border-radius:10px;padding:9px 14px;margin-bottom:10px}
+  .sum{font-size:12px;color:var(--muted);font-weight:700;padding:2px 9px;border-radius:10px;background:var(--bg)}
+  .sum b{color:var(--ink)}
+  .sum.ok{background:var(--ok-bg);color:var(--ok)} .sum.no{background:var(--no-bg);color:var(--no)}
+  .sum.may{background:var(--may-bg);color:var(--may)} .sum.na{background:var(--na-bg);color:var(--na)}
+  .sumd{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto;font-size:11px;color:var(--faint)}
+  .doccap{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:2px 8px}
+  .doccap b{color:var(--ink)}
+
+  .legend{font-size:12px;color:var(--muted);margin-bottom:12px;padding:8px 12px;background:var(--card);border-radius:8px;border:1px solid var(--line)}
+
+  .filter-bar{position:sticky;top:0;z-index:9;background:var(--bg);padding:10px 0;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap}
+  .tab{border:1px solid var(--line);background:var(--card);border-radius:20px;padding:5px 12px;cursor:pointer;font-size:12px;font-weight:600}
+  .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .search{flex:1;min-width:180px;max-width:300px}
+  .search input{width:100%;padding:6px 12px;border:1px solid var(--line);border-radius:8px;font-size:13px}
+
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  thead{background:#f8fafb}
+  th{padding:10px 12px;text-align:left;font-size:12px;font-weight:700;color:var(--muted);border-bottom:2px solid var(--line)}
+  td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+  tr:last-child td{border-bottom:none}
+  tr[data-type="inc"]{border-left:4px solid var(--inc)}
+  tr[data-type="exc"]{border-left:4px solid var(--exc)}
+
+  /* 主条件行（两级表格的父行）：一条原始入排标准的组级结论 */
+  tr.prow{background:#f8fafb;cursor:pointer}
+  tr.prow:hover{background:#eef2f5}
+  tr.prow.open{background:#eef2f5}
+  tr.prow td{padding:9px 12px;border-bottom:1px solid var(--line)}
+  .pcell{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .pcell .caret{color:var(--faint);font-size:10px;transition:transform .15s;display:inline-block}
+  tr.prow.open .caret{transform:rotate(90deg)}
+  .pcell .pnum{font-family:ui-monospace,Consolas,monospace;font-weight:800;font-size:12.5px;white-space:nowrap}
+  .pcell .pdesc{font-weight:700;font-size:13.5px;flex:1;min-width:160px}
+  .pcell .pmeta{color:var(--faint);font-size:11px;white-space:nowrap}
+  .pcell .pcnt{display:flex;gap:5px;flex-wrap:wrap}
+  .pcell .pcnt .st{font-size:10.5px;padding:1px 7px;border-radius:9px;font-weight:700}
+  .pcell .pcnt .st.ok{background:var(--ok-bg);color:var(--ok)}
+  .pcell .pcnt .st.no{background:var(--no-bg);color:var(--no)}
+  .pcell .pcnt .st.may{background:var(--may-bg);color:var(--may)}
+  .pcell .pcnt .st.na{background:var(--na-bg);color:var(--na)}
+  /* 子条件行：结构与渲染与单级表格时完全一致，只是默认折叠 */
+  tr.subrow td:first-child{padding-left:26px}
+  .tabhint{font-size:11px;color:var(--faint);font-weight:700;align-self:center;margin-right:2px}
+  .expand-all{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:5px 10px;cursor:pointer;font-size:12px;font-weight:600;color:var(--muted)}
+  .expand-all:hover{border-color:var(--brand);color:var(--brand)}
+
+  .id-cell{font-family:ui-monospace,Consolas,monospace;font-weight:700;font-size:12px;white-space:nowrap}
+  .id-cell .badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;margin-left:4px;font-weight:600}
+  .id-cell .badge.inc{background:var(--inc-bg);color:var(--inc)}
+  .id-cell .badge.exc{background:var(--exc-bg);color:var(--exc)}
+
+  .cond-cell .sub{font-weight:700;font-size:13.5px;margin-bottom:2px}
+  .cond-cell .orig{color:var(--muted);font-size:12px}
+  .cond-cell .src{color:var(--faint);font-size:11px;margin-top:2px}
+
+  .verdict{display:inline-block;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:700;white-space:nowrap}
+  .verdict.ok{background:var(--ok-bg);color:var(--ok)}
+  .verdict.no{background:var(--no-bg);color:var(--no)}
+  .verdict.may{background:var(--may-bg);color:var(--may)}
+  .verdict.na{background:var(--na-bg);color:var(--na)}
+
+  .reason-cell{color:var(--ink);font-size:12.5px;line-height:1.5}
+
+  .evidence-cell .ev-card{background:#f8fafb;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:6px}
+  .ev-card .ev-src{font-size:11px;font-weight:600;color:var(--brand)}
+  .ev-card .ev-page{font-size:11px;color:var(--faint);margin-left:8px}
+  .ev-card .ev-quote{font-size:12px;color:var(--ink);margin:4px 0;border-left:3px solid var(--may);padding-left:8px}
+  .ev-card .ev-thumb{margin-top:6px;cursor:pointer;border:2px solid var(--may);border-radius:6px;max-width:120px;max-height:80px;object-fit:cover}
+  .ev-card .ev-thumb:hover{border-color:var(--brand);box-shadow:0 2px 8px rgba(0,0,0,.15)}
+
+  /* 原件引用：缩略图(图片)/文档卡片(txt·md)，点击外跳打开原件链接 */
+  .ev-card .ev-orig{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line)}
+  .ev-card .ev-orig-label{font-size:11px;color:var(--faint);margin-bottom:4px}
+  .ev-card .ev-orig-grid{display:flex;gap:6px;flex-wrap:wrap}
+  .ev-card .ev-orig-link{position:relative;display:inline-flex;flex-direction:column;align-items:center;text-decoration:none;max-width:88px}
+  .ev-card .ev-orig-thumb{width:72px;height:56px;object-fit:cover;border:1px solid var(--line);border-radius:6px;background:#fff}
+  .ev-card .ev-orig-link:hover .ev-orig-thumb{border-color:var(--brand);box-shadow:0 2px 8px rgba(0,0,0,.15)}
+  /* 文档型原件（txt/md）：图标卡片 + 可选文本预览 */
+  .ev-card .ev-orig-doc{width:72px;height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:6px;background:#f8fafb;overflow:hidden}
+  .ev-card .ev-orig-link:hover .ev-orig-doc{border-color:var(--brand);box-shadow:0 2px 8px rgba(0,0,0,.15)}
+  .ev-card .ev-orig-doc .doc-ico{font-size:22px;line-height:1}
+  .ev-card .ev-orig-doc .doc-ext{font-size:9px;font-weight:700;color:var(--brand);margin-top:2px;letter-spacing:.5px;text-transform:uppercase}
+  .ev-card .ev-orig-doc .doc-preview{font-size:8px;color:var(--faint);line-height:1.2;padding:2px 4px;max-height:100%;overflow:hidden;text-align:left;width:100%}
+  .ev-card .ev-orig-link::after{content:"↗";position:absolute;top:2px;right:2px;background:rgba(15,118,110,.9);color:#fff;font-size:10px;line-height:1;padding:2px 3px;border-radius:4px}
+  .ev-card .ev-orig-cap{font-size:10px;color:var(--faint);margin-top:2px;text-align:center;line-height:1.2;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  .lightbox{display:none;position:fixed;inset:0;z-index:999}
+  .lightbox.show{display:flex;align-items:center;justify-content:center}
+  .lb-overlay{position:absolute;inset:0;background:rgba(0,0,0,.75)}
+  .lb-content{position:relative;max-width:90vw;max-height:90vh;display:flex;flex-direction:column;align-items:center}
+  .lb-img{max-width:100%;max-height:80vh;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,.3)}
+  .lb-caption{color:#fff;font-size:13px;margin-top:10px;text-align:center;max-width:600px}
+  .lb-close{position:absolute;top:-30px;right:-10px;background:none;border:none;color:#fff;font-size:28px;cursor:pointer}
+
+  /* 判定徽章：每条条件行按物料显示若干枚 */
+  .pjudges{display:flex;gap:6px;flex-wrap:wrap}
+  .djudge{display:inline-flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:7px;overflow:hidden;font-size:11px;line-height:1.5}
+  .djudge-doc{background:#eef2f6;color:var(--key);font-weight:700;padding:2px 7px}
+  .djudge-v{font-weight:800;padding:2px 8px;color:var(--muted);background:var(--card)}
+  .djudge-v.ok{background:var(--ok-bg);color:var(--ok)} .djudge-v.no{background:var(--no-bg);color:var(--no)}
+  .djudge-v.may{background:var(--may-bg);color:var(--may)} .djudge-v.na{background:var(--line);color:var(--muted)}
+
+  /* 理由按物料分小节 */
+  .reason-cell .dreason{margin-bottom:6px}
+  .reason-cell .dreason:last-child{margin-bottom:0}
+  .dreason-doc{display:inline-block;font-size:11px;font-weight:700;color:var(--brand);background:var(--inc-bg);
+    border-radius:6px;padding:1px 7px;margin-bottom:3px}
+  .dreason-t{font-size:12px;color:var(--ink)}
+
+  /* 证据按物料分组合并，卡片自带来源标签 */
+  .evidence-cell .ev-group{margin-bottom:8px}
+  .evidence-cell .ev-group:last-child{margin-bottom:0}
+  .ev-group-doc{font-size:11px;font-weight:700;color:var(--brand);background:#eef6f5;
+    border-radius:6px 6px 0 0;padding:2px 8px;border:1px solid var(--line);border-bottom:none;display:inline-block}
+
+  footer{color:var(--faint);font-size:12px;text-align:center;padding:22px}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">入排标准 × 病历 · 比对判读（表格视图）</h1>
+  <div class="sub" id="subtitle"></div>
+  <div class="meta" id="meta">入选项「符合」= 条件满足 · 排除项「符合」= 排除未触发（可入选） · 「不符合」= 反之 · 「存疑」= 相关内容不充分 · 「无法判断」= 无对应内容</div>
+</header>
+
+<div class="wrap">
+  <div class="warning-banner" id="warnings"></div>
+  <div class="doc-summary" id="summaryBar"></div>
+  <div class="legend">🟢 符合 · 🔴 不符合 · 🟡 存疑 · ⚪ 无法判断　|　表格按**入排条件统一汇总**：一条主条件/子条件一行，同一患者的多份物料是共享证据——多份文件有证据就全部匹配展示（证据卡片标注来源），但同一条条件只显示**一枚折叠结论徽章**，按 不符合＞符合＞存疑＞无法判断 取最严格者，杜绝矛盾结论共存　|　主条件行=该条标准的组级结论（各物料 criteria_rollup 按同优先级折叠；入选「或组」任一满足即整条满足，排除「或组」任一触发即整条触发），点击展开子条件明细　|　黄框=PDF定位高亮，点击放大　|　原件(↗)点击在新标签页打开：图片显示缩略图，txt/md 显示文档卡片</div>
+  <div class="filter-bar">
+    <span class="tabhint">按主条件筛选</span>
+    <div class="tabs" id="tabs"></div>
+    <button class="expand-all" id="expandAll" type="button">展开全部</button>
+    <div class="search"><input id="q" type="search" placeholder="搜索条件编号/内容..." aria-label="搜索"></div>
+  </div>
+  <table>
+    <thead><tr><th style="width:80px">编号</th><th style="width:32%">条件（子条件/原文）</th><th style="width:120px">判定</th><th style="width:24%">推断理由（按物料）</th><th>证据与定位（全部物料合并）</th></tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<div class="lightbox" id="lightbox">
+  <div class="lb-overlay" onclick="closeLB()"></div>
+  <div class="lb-content">
+    <img class="lb-img" id="lbImg">
+    <div class="lb-caption" id="lbCap"></div>
+    <button class="lb-close" onclick="closeLB()">×</button>
+  </div>
+</div>
+
+<footer>Generated by DeerFlow Eligibility Screener</footer>
+
+<!-- DATA: Replace this with actual report data JSON -->
+<script id="data" type="application/json">
+{
+  "protocol": {"id": "", "title": "", "source_files": []},
+  "crit": {},
+  "ids": [],
+  "parents": [],
+  "docs": {}
+}
+</script>
+
+<script>
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const {protocol, crit, ids, docs} = DATA;
+// 图片池：证据截图去重后集中存放于 DATA.imgs，字段值写 "#imgN" 引用；也兼容直接内联 data URI
+const IMGS = DATA.imgs || {};
+const rimg = v => (typeof v === 'string' && v.charAt(0) === '#' && IMGS[v]) ? IMGS[v] : v;
+// 判定条目字段兼容：中文键（结论/理由/证据）与英文键（conclusion/reason/evidence）
+const norm = it => ({
+  结论: (it && (it.结论 || it.conclusion)) || '无法判断',
+  理由: (it && (it.理由 || it.reason)) || '',
+  证据: (it && (it.证据 || it.evidence)) || []
+});
+// 跨物料结论折叠：同一患者的多份物料是共享证据，一条条件只允许一个结论。
+// 优先级 不符合 > 符合 > 存疑 > 无法判断（构建器已算好 MERGED，这里兜底旧数据块）。
+const FOLD = ['不符合', '符合', '存疑', '无法判断'];
+const fold = vs => FOLD.find(c => vs.includes(c)) || '无法判断';
+const MERGED = DATA.merged || {};
+// 某条子条件的折叠结论：优先构建器产出的 MERGED，缺失时按各物料判定折叠
+const verdictOf = id => {
+  const m = MERGED[id];
+  if (m && FOLD.includes(m.结论)) return m.结论;
+  return fold(docKeys.map(k => norm(((docs[k] || {}).J || {})[id]).结论));
+};
+
+// ── 主条件层（两级表格的父行）─────────────────────────────────────────────
+// 主条件结论 = 各物料 criteria_rollup 按同优先级折叠（构建器已算好 p.结论，
+// 本模板只渲染）。AND/OR 折叠口径的唯一真相源仍是判定侧 rollup.py。全「未汇总」时
+// 显示「未汇总」。
+const UNROLLED = '未汇总';
+const pidOf = id => {
+  const m = String(id).match(/^(IN|EX)-(\d+)(?:-(\d+))?$/);
+  return m ? m[1] + '-' + parseInt(m[2], 10) : String(id);
+};
+// DATA.parents 由构建器给出；旧数据块（无该字段）时按编号就地推导，保证不丢行
+const PARENTS = (DATA.parents && DATA.parents.length) ? DATA.parents : (() => {
+  const map = {}, order = [];
+  ids.forEach(id => {
+    const pid = pidOf(id), c = crit[id] || {};
+    if (!map[pid]) { map[pid] = {pid: pid, inc: c.inc !== false, desc: c.子条件 || pid, members: []}; order.push(pid); }
+    map[pid].members.push(id);
+  });
+  return order.map(pid => map[pid]);
+})();
+// 主条件折叠结论兜底：旧数据块无 p.结论 时按各物料 criteria_rollup 折叠（绝不重算 AND/OR）
+function rfold(p) {
+  const vs = [];
+  docKeys.forEach(k => {
+    const e = ((docs[k] || {}).R || {})[p.pid];
+    const v = e && (e.结论 || e.conclusion);
+    if (FOLD.includes(v)) vs.push(v);
+  });
+  return vs.length ? fold(vs) : UNROLLED;
+}
+const pverdict = p => (FOLD.includes(p.结论) ? p.结论 : rfold(p));
+
+const docKeys = Object.keys(docs);
+let activeFilter = 'all';
+let openPids = new Set();   // 手动展开的主条件
+let allOpen = false;        // 「展开全部」开关
+
+// Init header
+document.getElementById('subtitle').textContent = `${protocol.id} · ${protocol.title}`;
+
+// Render warnings
+const warnings = Object.values(docs).flatMap(d => d.warnings || []);
+if (warnings.length) {
+  const wEl = document.getElementById('warnings');
+  wEl.innerHTML = '⚠️ ' + warnings.map(w => w.details || w).join('；');
+  wEl.classList.add('show');
+}
+
+// ── 统一汇总条（跨物料）──────────────────────────────────────────────────
+// 按条件/子条件统一汇总：判定数 = 子条件数，每个条件一个跨物料折叠结论
+// （不符合>符合>存疑>无法判断）。不再按物料独立统计——同一患者的多份物料
+// 是共享证据，每份患者资料不单独出一套判定。
+function verdictCounts() {
+  const c = {符合: 0, 不符合: 0, 存疑: 0, 无法判断: 0};
+  ids.forEach(id => {
+    const v = verdictOf(id);
+    if (c[v] !== undefined) c[v]++;
+  });
+  return c;
+}
+function renderSummary() {
+  const c = verdictCounts();
+  document.getElementById('summaryBar').innerHTML =
+    `<span class="sum">主条件 <b>${PARENTS.length}</b> 条</span>` +
+    `<span class="sum">子条件 <b>${ids.length}</b> 条</span>` +
+    `<span class="sum">物料 <b>${docKeys.length}</b> 份</span>` +
+    `<span class="sum">判定 <b>${ids.length}</b> 个</span>` +
+    `<span class="sum ok">符合 ${c.符合||0}</span>` +
+    `<span class="sum no">不符合 ${c.不符合||0}</span>` +
+    `<span class="sum may">存疑 ${c.存疑||0}</span>` +
+    `<span class="sum na">无法判断 ${c.无法判断||0}</span>` +
+    `<span class="sumd">同一患者多份物料合并判定：每条条件一枚折叠结论徽章</span>`;
+}
+
+// Render filter tabs —— 计数与过滤都按**主条件组**口径：组级（折叠结论）或组内
+// 任一子条件的折叠结论命中筛选值即计入。
+const FILTERS = ['all','符合','不符合','存疑','无法判断'];
+const FILTER_LABELS = {'all':'全部','符合':'符合','不符合':'不符合','存疑':'存疑','无法判断':'无法判断'};
+function groupHits(pid, members, f) {
+  const p = PARENTS.find(x => x.pid === pid);
+  if (p && pverdict(p) === f) return true;
+  return (members || []).some(id => verdictOf(id) === f);
+}
+function parentCounts() {
+  const counts = {all: PARENTS.length, 符合:0, 不符合:0, 存疑:0, 无法判断:0};
+  counts[UNROLLED] = 0;
+  PARENTS.forEach(p => {
+    if (groupHits(p.pid, p.members, UNROLLED)) counts[UNROLLED]++;
+    FILTERS.forEach(f => { if (f !== 'all' && groupHits(p.pid, p.members, f)) counts[f]++; });
+  });
+  return counts;
+}
+function renderTabs() {
+  const counts = parentCounts();
+  const filters = counts[UNROLLED] ? FILTERS.concat([UNROLLED]) : FILTERS;
+  document.getElementById('tabs').innerHTML = filters.map(f =>
+    `<button class="tab${f===activeFilter?' active':''}" data-f="${f}">${FILTER_LABELS[f]||f}(${counts[f]||0})</button>`
+  ).join('');
+}
+document.getElementById('tabs').addEventListener('click', e => {
+  const t = e.target.closest('.tab');
+  if (!t) return;
+  activeFilter = t.dataset.f;
+  render();
+});
+document.getElementById('q').addEventListener('input', render);
+document.getElementById('expandAll').addEventListener('click', () => {
+  allOpen = !allOpen;
+  openPids = new Set();
+  document.getElementById('expandAll').textContent = allOpen ? '收起全部' : '展开全部';
+  render();
+});
+
+// Verdict class map
+const VC = {'符合':'ok','不符合':'no','存疑':'may','无法判断':'na'};
+const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+// 主条件行：一条原始入排标准的组级结论（各物料 criteria_rollup 折叠为一枚徽章）
+// + 子条件折叠结论计数 + 折叠开关
+function prow(p, opened) {
+  const type = p.inc !== false ? 'inc' : 'exc';
+  const pv = pverdict(p);
+  const cnt = {符合: 0, 不符合: 0, 存疑: 0, 无法判断: 0};
+  (p.members || []).forEach(id => {
+    const v = verdictOf(id);
+    if (cnt[v] !== undefined) cnt[v]++;
+  });
+  let rule = p.规则 || '';
+  if (!rule) {  // 旧数据块兜底：规则取自判定侧 criteria_rollup（各物料一致，取首个非空）
+    for (const k of docKeys) {
+      const e = ((docs[k] || {}).R || {})[p.pid];
+      if (e && (e.规则 || e.rule)) { rule = e.规则 || e.rule; break; }
+    }
+  }
+  const ruleText = rule ? ` · ${esc(rule)}` : '';
+  return `<tr class="prow${opened ? ' open' : ''}" data-type="${type}" data-pid="${esc(p.pid)}">
+    <td colspan="5"><div class="pcell">
+      <span class="caret">▶</span>
+      <span class="pnum">${esc(p.pid)}</span>
+      <span class="djudge-v ${VC[pv]||'na'}">${esc(pv)}</span>
+      <span class="pdesc">${esc(p.desc || '')}</span>
+      <span class="pcnt">
+        <span class="st ok">符合 ${cnt.符合||0}</span>
+        <span class="st no">不符合 ${cnt.不符合||0}</span>
+        <span class="st may">存疑 ${cnt.存疑||0}</span>
+        <span class="st na">无法判断 ${cnt.无法判断||0}</span>
+      </span>
+      <span class="pmeta">${(p.members||[]).length} 子条件 · ${docKeys.length} 份物料${ruleText}</span>
+    </div></td>
+  </tr>`;
+}
+
+// 证据卡渲染（证据卡片 / 图片池 / Lightbox / 原件外跳均不变，输入改为证据数组）
+function evHtml(evList) {
+  return (evList||[]).map(evRaw => {
+      // 证据字段兼容中/英文键
+      const ev = {
+        来源: evRaw.来源 || evRaw.source || '',
+        页: evRaw.页 || evRaw.page || '',
+        原文摘录: evRaw.原文摘录 || evRaw.quote || '',
+        图: evRaw.图 || evRaw.screenshot || '',
+        原件: evRaw.原件 || evRaw.原件图 || evRaw.证件图 || evRaw.origin || []
+      };
+      // 原件引用：图片→缩略图；txt/md→文档卡片。点击均在新标签页外跳打开原件链接
+      const origList = ev.原件 || [];
+      const origInner = (Array.isArray(origList) ? origList : [origList]).map(o => {
+        const oi = (typeof o === 'string') ? {链接: o} : (o || {});
+        const url = oi.链接 || oi.url || '';
+        if (!url) return '';
+        const thumb = rimg(oi.缩略图 || oi.thumb || '');
+        const cap = oi.说明 || oi.caption || '';
+        const preview = oi.摘要 || oi.preview || '';
+        // 判定类型：显式 类型/type，否则按链接(或缩略图)扩展名推断
+        const extSrc = String(url).split('?')[0].split('#')[0];
+        const ext = (extSrc.match(/\.([a-z0-9]+)$/i) || [,''])[1].toLowerCase();
+        const TEXT_EXT = ['txt','md','markdown','csv','json','log','text'];
+        const IMG_EXT = ['jpg','jpeg','png','gif','webp','bmp','svg','tif','tiff'];
+        let kind = (oi.类型 || oi.type || '').toLowerCase();
+        if (kind !== 'text' && kind !== 'image') {
+          if (TEXT_EXT.includes(ext)) kind = 'text';
+          else if (IMG_EXT.includes(ext) || thumb) kind = 'image';
+          else if (String(thumb).startsWith('data:image')) kind = 'image';
+          else kind = 'text';
+        }
+        const safeUrl = String(url).replace(/"/g,'&quot;');
+        const safeCap = String(cap).replace(/"/g,'&quot;');
+        let inner;
+        if (kind === 'image') {
+          const src = String(thumb || url).replace(/"/g,'&quot;');
+          inner = `<img class="ev-orig-thumb" src="${src}" alt="${safeCap||'原件图片'}" loading="lazy">`;
+        } else {
+          const extLabel = ext || 'doc';
+          inner = `<div class="ev-orig-doc"><span class="doc-ico">📄</span><span class="doc-ext">${esc(extLabel)}</span>${preview ? `<span class="doc-preview">${esc(preview).slice(0,80)}</span>` : ''}</div>`;
+        }
+        const capText = cap || (extSrc.split('/').pop() || '');
+        return `<a class="ev-orig-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeCap||'打开原件'}">
+          ${inner}
+          ${capText ? `<span class="ev-orig-cap">${esc(capText)}</span>` : ''}
+        </a>`;
+      }).join('');
+      const origHtml = origInner ? `<div class="ev-orig"><div class="ev-orig-label">原件</div><div class="ev-orig-grid">${origInner}</div></div>` : '';
+      return `<div class="ev-card">
+        <span class="ev-src">${ev.来源||''}</span><span class="ev-page">p${ev.页||'?'}</span>
+        <div class="ev-quote">${ev.原文摘录||''}</div>
+        ${ev.图 ? `<img class="ev-thumb" src="${rimg(ev.图)}" onclick="openLB(this,'${(ev.来源||'').replace(/'/g,"&#39;")} p${ev.页||''}','${(ev.原文摘录||'').replace(/'/g,"&#39;")}')" alt="evidence" loading="lazy">` : ''}
+        ${origHtml}
+      </div>`;
+    }).join('');
+}
+
+// 子条件行：一条子条件跨全部物料统一聚合 —— 判定列=一枚折叠结论徽章
+// （不符合>符合>存疑>无法判断）；理由=分物料小节；证据=全部物料的证据卡片
+// 按物料分组合并（多份文件有证据就全部匹配展示，每组带物料小标题）
+function srow(id) {
+  const c = crit[id] || {};
+  const isInc = c.inc !== false;
+  const type = isInc ? 'inc' : 'exc';
+  const badgeClass = isInc ? 'inc' : 'exc';
+  const badgeText = isInc ? '入选' : '排除';
+  const v = verdictOf(id);
+  const items = docKeys.map(k => ({k, d: docs[k] || {}, it: norm(((docs[k] || {}).J || {})[id])}));
+  const reasons = items.filter(x => x.it.理由).map(x =>
+    `<div class="dreason"><span class="dreason-doc">${esc(x.d.标签 || x.k)}</span><div class="dreason-t">${esc(x.it.理由)}</div></div>`
+  ).join('');
+  const evBlocks = items.filter(x => (x.it.证据||[]).length).map(x =>
+    `<div class="ev-group"><div class="ev-group-doc">${esc(x.d.标签 || x.k)}</div>${evHtml(x.it.证据)}</div>`
+  ).join('');
+  return `<tr class="subrow" data-type="${type}">
+      <td class="id-cell">${id}<span class="badge ${badgeClass}">${badgeText}</span></td>
+      <td class="cond-cell"><div class="sub">${c.子条件||''}</div><div class="orig">${c.原文||''}</div><div class="src">${c.来源||''}</div></td>
+      <td class="verdict-cell"><span class="djudge-v ${VC[v]||'na'}">${esc(v)}</span></td>
+      <td class="reason-cell">${reasons||'<span style="color:var(--faint)">—</span>'}</td>
+      <td class="evidence-cell">${evBlocks||'<span style="color:var(--faint)">—</span>'}</td>
+    </tr>`;
+}
+
+function render() {
+  renderTabs();
+  renderSummary();
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  const subText = id => {
+    const c = crit[id] || {};
+    const reasons = docKeys.map(k => norm(((docs[k] || {}).J || {})[id]).理由).join(' ');
+    return `${id} ${c.子条件||''} ${c.原文||''} ${reasons}`.toLowerCase();
+  };
+  let html = '';
+  PARENTS.forEach(p => {
+    if (activeFilter !== 'all' && !groupHits(p.pid, p.members, activeFilter)) return;
+    let members = p.members || [];
+    let forceOpen = allOpen || activeFilter !== 'all';
+    if (q) {
+      const parentHit = `${p.pid} ${p.desc||''}`.toLowerCase().includes(q);
+      if (!parentHit) {
+        members = members.filter(id => subText(id).includes(q));
+        if (!members.length) return;
+      }
+      forceOpen = true;   // 搜索命中时自动展开，省去逐条点击
+    }
+    const opened = forceOpen || openPids.has(p.pid);
+    html += prow(p, opened);
+    if (opened) members.forEach(id => { html += srow(id); });
+  });
+  document.getElementById('tbody').innerHTML = html || '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px">无匹配条目</td></tr>';
+}
+
+// 点击主条件行展开/收起
+document.getElementById('tbody').addEventListener('click', e => {
+  const row = e.target.closest('tr.prow');
+  if (!row) return;
+  const pid = row.dataset.pid;
+  if (openPids.has(pid)) openPids.delete(pid); else openPids.add(pid);
+  render();
+});
+
+function openLB(img, caption, quote) {
+  document.getElementById('lbImg').src = img.src;
+  document.getElementById('lbCap').textContent = `${caption} — ${quote}`;
+  document.getElementById('lightbox').classList.add('show');
+}
+function closeLB() { document.getElementById('lightbox').classList.remove('show'); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLB(); });
+
+render();
+</script>
+</body>
+</html>

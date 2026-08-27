@@ -1,0 +1,405 @@
+{
+ "_说明": "判定产物 judgments_draft_{id}_{TRACK}.json / judgments_{id}.json 的结构样例——统一证据源形态：顶层 `judgments`（条件ID → 条目，每条条件只判一次，evidence 跨物料合并、source 逐字取 phase2_summary.ocr_results[].source），**没有 documents 维度**。结构约束的权威文档是 references/judgment-schema.md；本文件只是可直接对照抄写的形态样例。summary / criteria_rollup 由 judge_pack.py merge-judgments 机械重算（⛔ 不要手写）；本示例的 summary 与 rollup_summary 均按上方摘录条目实际重算，数字自洽。patient_name 供报告标签使用。",
+ "patient_id": "M017",
+ "patient_name": "许德",
+ "judgment_date": "2025-11-28",
+ "judgments": {
+  "IN-2-1": {
+   "_示例说明": "入选项最简形态：evidence 是对象数组，即便只有一条。",
+   "conclusion": "符合",
+   "reason": "患者年龄58岁，满足≥18周岁的入选要求",
+   "evidence": [
+    {
+     "source": "既往病历",
+     "page": 1,
+     "quote": "患者许德，男，58岁",
+     "hit": true,
+     "screenshot_ref": "images/筛选期病历/筛选期病历_page_001.png"
+    }
+   ]
+  },
+  "IN-5-1": {
+   "_示例说明": "OR 异质分支拆分后的入选子条件：带 或组 / 或组语义，组内任一支符合即整组满足（详见 criteria-parser 的拆分规则）。",
+   "conclusion": "符合",
+   "或组": "IN-5-OR",
+   "或组语义": "任一满足即整条满足",
+   "reason": "PSA 由 12.4 ng/mL 升至 21.8 ng/mL（间隔 3 周连续两次升高），满足 PSA 进展",
+   "evidence": [
+    {
+     "source": "筛选期检查",
+     "page": 3,
+     "quote": "PSA 12.4 ng/mL（2025-10-08）；PSA 21.8 ng/mL（2025-10-29）",
+     "hit": true,
+     "screenshot_ref": "images/筛选期检查/筛选期检查_page_003.jpg"
+    }
+   ]
+  },
+  "IN-10-7": {
+   "_示例说明": "判「无法判断」时 evidence 仍不留空：把检索到的旁证写进来并标 hit=false，reason 含三要素（已查范围 + 缺失的具体信息 + 可解除条件）。",
+   "conclusion": "无法判断",
+   "reason": "已查各来源检验报告单与病程记录，仅见血清肌酐 80.1 umol/L，未见按 Cockcroft-Gault 计算的肌酐清除率；缺 CrCl 具体数值；需补充 CrCl 计算结果或 eGFR 报告。",
+   "evidence": [
+    {
+     "source": "筛选期检查",
+     "page": 5,
+     "quote": "肌酐 80.1 umol/L",
+     "hit": false,
+     "screenshot_ref": "images/筛选期检查/筛选期检查_page_005.jpg"
+    }
+   ]
+  },
+  "IN-1": {
+   "_示例说明": "「不可从病例获取」条目同样必须核查病历。此例在病历里查到了知情同意签署记录，故判符合——不得因分类是「不可从病例获取」就静默判无法判断。",
+   "conclusion": "符合",
+   "reason": "病历知情过程记录载明「知情同意书签署=2026-04-15 16:21；研究医生签署=2026-04-15 16:25」，且患者「经过充分考虑后表示完全理解并自愿参加本研究」。",
+   "evidence": [
+    {
+     "source": "筛选期病历",
+     "page": 12,
+     "quote": "知情同意书签署=2026-04-15 16:21; 研究医生签署=2026-04-15 16:25; 筛选号=S042002",
+     "hit": true,
+     "screenshot_ref": "images/筛选期病历/筛选期病历_page_012.jpg"
+    }
+   ]
+  },
+  "EX-2-1": {
+   "_示例说明": "时间窗条件、参考日期取自材料：条文基准是「签署知情同意书前6个月内」，先在病历里找到 ICF 签署日期并用它，日期原文进 evidence；reason 显式声明「参考日期取自病历…」。⛔ 不得把基准当成筛选日。",
+   "conclusion": "符合",
+   "exclusion_triggered": false,
+   "或组": "EX-2-OR",
+   "或组语义": "任一触发即整条触发",
+   "reason": "参考日期取自病历「知情同意书签署=2026-04-15」；既往治疗史载镭-223 治疗于 2024-03 结束，距该参考日期已逾 6 个月，且未见锶-89/钐-153/铼-186/铼-188/半身放疗记录，未触发该排除条件。",
+   "evidence": [
+    {
+     "source": "筛选期病历",
+     "page": 12,
+     "quote": "知情同意书签署=2026-04-15 16:21; 研究医生签署=2026-04-15 16:25",
+     "hit": true,
+     "screenshot_ref": "images/筛选期病历/筛选期病历_page_012.jpg"
+    },
+    {
+     "source": "既往病历",
+     "page": 2,
+     "quote": "2024-03 镭-223（氯化镭）治疗结束，共6周期",
+     "hit": true,
+     "screenshot_ref": "images/既往病历/既往病历_page_002.jpg"
+    }
+   ]
+  },
+  "EX-2-3": {
+   "_示例说明": "同一条文、参考日期缺失且兜底会导致负面结论 → 单向保护判「存疑」而非「不符合」。按判定当天推算 2025-08 的镭-223 落在 6 个月窗口内=触发排除；但 ICF 签署日期未知，若其晚于判定当天则该治疗已逾 6 个月、不触发——结论取决于缺失的参考日期，不得凭假设排除患者（约束 2b / 「日期/时间窗判定」D）。存疑故省略 exclusion_triggered。",
+   "conclusion": "存疑",
+   "或组": "EX-2-OR",
+   "或组语义": "任一触发即整条触发",
+   "reason": "已查既往治疗史与放疗记录，载明 2025-08 接受镭-223 治疗；但各来源均未见知情同意书签署日期（已查筛选期病历知情过程记录、筛选期检查首页）。按判定当天推算该治疗落在 6 个月窗口内，然而结论取决于缺失的参考日期「知情同意书签署」，需补充该日期后方可定论。",
+   "evidence": [
+    {
+     "source": "既往病历",
+     "page": 3,
+     "quote": "2025-08 镭-223 治疗第1周期",
+     "hit": true,
+     "screenshot_ref": "images/既往病历/既往病历_page_003.jpg"
+    }
+   ]
+  },
+  "EX-12": {
+   "_示例说明": "排除项未触发：exclusion_triggered=false 必须配 conclusion=符合，且 reason 末尾显式写「未触发该排除条件」。",
+   "conclusion": "符合",
+   "exclusion_triggered": false,
+   "reason": "HBsAg阴性，HCV抗体阴性，HIV抗体阴性，梅毒抗体阴性，未触发该排除条件。",
+   "evidence": [
+    {
+     "source": "既往病历",
+     "page": 8,
+     "quote": "乙肝表面抗原(HBsAg): 阴性; 丙肝抗体(Anti-HCV): 阴性; HIV抗体: 阴性; 梅毒: RPR阴性",
+     "hit": true,
+     "screenshot_ref": "images/筛选期病历/筛选期病历_page_008.jpg"
+    }
+   ]
+  },
+  "EX-5": {
+   "_示例说明": "排除项被触发：exclusion_triggered=true 配 conclusion=不符合，reason 必须陈述命中该排除情形的正向证据并显式写「触发该排除条件」。",
+   "conclusion": "不符合",
+   "exclusion_triggered": true,
+   "reason": "2023-05 确诊结肠癌并行根治术，距本次筛选不足5年，触发该排除条件，应排除。",
+   "evidence": [
+    {
+     "source": "既往病历",
+     "page": 2,
+     "quote": "2023-05 结肠癌根治术后，术后病理示中分化腺癌",
+     "hit": true,
+     "screenshot_ref": "images/筛选期病历/筛选期病历_page_002.jpg"
+    }
+   ]
+  },
+  "EX-1-3": {
+   "_示例说明": "OR 异质分支拆分后的排除子条件（或组语义与入选轨相反）。此例演示 SKILL 原则十一 B 的三步判据：①有哮喘病史 → 只满足前半句；②必须找到**针对哮喘**的治疗记录才能看归类；③找不到 → 判 存疑。两个反例都落不到②：氘恩扎如胺是抗肿瘤药；地塞米松虽确属全身性糖皮质激素（归类通过），但病历写的是治尿频尿急、时间与放疗期重合，不是哮喘治疗。⛔ reason 不得写「未见全身性糖皮质激素处方」——地塞米松就在 OCR 里，那是事实错误的缺失断言，会被 false_absence_claim 抓出。",
+   "conclusion": "存疑",
+   "或组": "EX-1-OR",
+   "或组语义": "任一触发即整条触发",
+   "reason": "病历见「处理：哮喘」，哮喘病史成立；但未见任何**针对哮喘**的治疗记录（无长期口服/吸入激素、无支扩剂、无生物制剂）。病历中出现的全身性糖皮质激素地塞米松（2025.04.09起）记载为「尿频尿急改善，尿痛有好转」、时间与 2025.04.09-05.19 放疗期重合，系放疗期/尿路症状用药，非哮喘治疗，不能用于满足「仍需全身性药物治疗」；研究者写的「临床试验筛选失败」是结论而非治疗记录，同样不能作为依据。缺哮喘当前治疗方案；需补充呼吸专科评估或长期用药记录。",
+   "evidence": [
+    {
+     "source": "既往病历",
+     "page": 1,
+     "quote": "处理：哮喘，临床试验筛选失败，建议更换氘恩扎如胺。用药前查PSA。",
+     "hit": true,
+     "screenshot_ref": "images/既往病历/既往病历_page_001.jpg"
+    },
+    {
+     "source": "既往病历",
+     "page": 1,
+     "quote": "2025.04.09起地塞米松及青霉素治疗，尿频尿急改善，尿痛有好转",
+     "hit": false,
+     "_为何不算": "地塞米松确属全身性糖皮质激素，但此处治的是尿频尿急（且与 2025.04.09-05.19 放疗期重合），不是哮喘 → 落不到判据②",
+     "screenshot_ref": "images/既往病历/既往病历_page_001.jpg"
+    },
+    {
+     "source": "external",
+     "quote": "氘恩扎如胺为恩扎卢胺类雄激素受体抑制剂，适应症为去势抵抗性前列腺癌",
+     "归类依据": "web_search 查证；该药为抗肿瘤全身治疗，非哮喘治疗，故不能用于满足本条的「仍需全身性药物治疗」",
+     "hit": false
+    },
+    {
+     "source": "external",
+     "quote": "地塞米松为人工合成的长效糖皮质激素，属全身性皮质类固醇",
+     "归类依据": "web_search 查证；归类通过≠本条触发——还须确认它治的是本条所述的变态反应病史（见 SKILL 原则十一 B 判据②）",
+     "hit": false
+    }
+   ]
+  }
+ },
+ "summary": {
+  "符合": 5,
+  "不符合": 1,
+  "存疑": 2,
+  "无法判断": 1
+ },
+ "criteria_rollup": {
+  "_示例说明": "主条件（IN-2 / EX-1 …）组级汇总，此处只列出上方 judgments 里出现过的那几条主条件（真实产物会覆盖全部主条件）。⛔ 判定与改判阶段都不要手写：由 judge_pack.py merge-judgments 每次合并无条件重算并覆盖；⛔ 必须与 judgments 平级，塞进 judgments 会让结构闸闸2（键集合恒等于标准包条件ID）直接 exit 2。折叠口径见 judgment-schema.md。",
+  "IN-1": {
+   "conclusion": "符合",
+   "track": "IN",
+   "rule": "单条",
+   "members": [
+    "IN-1"
+   ],
+   "decided_by": [
+    "IN-1"
+   ],
+   "counts": {
+    "符合": 1,
+    "不符合": 0,
+    "存疑": 0,
+    "无法判断": 0
+   }
+  },
+  "IN-2": {
+   "conclusion": "符合",
+   "track": "IN",
+   "rule": "单条",
+   "members": [
+    "IN-2-1"
+   ],
+   "decided_by": [
+    "IN-2-1"
+   ],
+   "counts": {
+    "符合": 1,
+    "不符合": 0,
+    "存疑": 0,
+    "无法判断": 0
+   }
+  },
+  "IN-5": {
+   "_示例说明": "或组：一支符合 + 两支无法判断 → 整条符合。⛔ 按 AND 汇总会判成不达标，等于错误淘汰患者。",
+   "conclusion": "符合",
+   "track": "IN",
+   "rule": "OR组",
+   "members": [
+    "IN-5-1",
+    "IN-5-2",
+    "IN-5-3"
+   ],
+   "decided_by": [
+    "IN-5-1"
+   ],
+   "counts": {
+    "符合": 1,
+    "不符合": 0,
+    "存疑": 0,
+    "无法判断": 2
+   },
+   "or_groups": {
+    "IN-5-OR": {
+     "conclusion": "符合",
+     "semantics": "任一满足即整条满足",
+     "members": [
+      "IN-5-1",
+      "IN-5-2",
+      "IN-5-3"
+     ],
+     "decided_by": [
+      "IN-5-1"
+     ]
+    }
+   }
+  },
+  "IN-10": {
+   "_示例说明": "并列子条件按 AND 折叠：不符合 > 存疑 > 无法判断 > 符合。此例 6 支符合、1 支无法判断（上方 judgments 只摘录了 IN-10-7），故整条落在无法判断。",
+   "conclusion": "无法判断",
+   "track": "IN",
+   "rule": "AND",
+   "members": [
+    "IN-10-1",
+    "IN-10-2",
+    "IN-10-3",
+    "IN-10-4",
+    "IN-10-5",
+    "IN-10-6",
+    "IN-10-7"
+   ],
+   "decided_by": [
+    "IN-10-7"
+   ],
+   "counts": {
+    "符合": 6,
+    "不符合": 0,
+    "存疑": 0,
+    "无法判断": 1
+   }
+  },
+  "EX-1": {
+   "_示例说明": "排除轨或组：任一支触发即整条触发（结论空间等价 AND）。此例四支均未触发、其中一支存疑（上方 judgments 只摘录了 EX-1-3），故整条存疑。",
+   "conclusion": "存疑",
+   "track": "EX",
+   "rule": "OR组",
+   "members": [
+    "EX-1-1",
+    "EX-1-2",
+    "EX-1-3",
+    "EX-1-4"
+   ],
+   "decided_by": [
+    "EX-1-3"
+   ],
+   "counts": {
+    "符合": 3,
+    "不符合": 0,
+    "存疑": 1,
+    "无法判断": 0
+   },
+   "or_groups": {
+    "EX-1-OR": {
+     "conclusion": "存疑",
+     "semantics": "任一触发即整条触发",
+     "members": [
+      "EX-1-1",
+      "EX-1-2",
+      "EX-1-3",
+      "EX-1-4"
+     ],
+     "decided_by": [
+      "EX-1-3"
+     ]
+    }
+   }
+  },
+  "EX-2": {
+   "_示例说明": "同一或组内一支符合、一支存疑 → 排除轨按 AND 折叠（不符合 > 存疑 > 无法判断 > 符合）得存疑：尚未触发，但有一支的结论取决于缺失的参考日期。",
+   "conclusion": "存疑",
+   "track": "EX",
+   "rule": "OR组",
+   "members": [
+    "EX-2-1",
+    "EX-2-3"
+   ],
+   "decided_by": [
+    "EX-2-3"
+   ],
+   "counts": {
+    "符合": 1,
+    "不符合": 0,
+    "存疑": 1,
+    "无法判断": 0
+   },
+   "or_groups": {
+    "EX-2-OR": {
+     "conclusion": "存疑",
+     "semantics": "任一触发即整条触发",
+     "members": [
+      "EX-2-1",
+      "EX-2-3"
+     ],
+     "decided_by": [
+      "EX-2-3"
+     ]
+    }
+   }
+  },
+  "EX-5": {
+   "conclusion": "不符合",
+   "track": "EX",
+   "rule": "单条",
+   "members": [
+    "EX-5"
+   ],
+   "decided_by": [
+    "EX-5"
+   ],
+   "counts": {
+    "符合": 0,
+    "不符合": 1,
+    "存疑": 0,
+    "无法判断": 0
+   }
+  },
+  "EX-12": {
+   "conclusion": "符合",
+   "track": "EX",
+   "rule": "单条",
+   "members": [
+    "EX-12"
+   ],
+   "decided_by": [
+    "EX-12"
+   ],
+   "counts": {
+    "符合": 1,
+    "不符合": 0,
+    "存疑": 0,
+    "无法判断": 0
+   }
+  }
+ },
+ "rollup_summary": {
+  "符合": 4,
+  "不符合": 1,
+  "存疑": 2,
+  "无法判断": 1
+ },
+ "warnings": [
+  {
+   "type": "discrepancy",
+   "field": "ECOG评分",
+   "details": "既往病历记录ECOG 1分，筛选期资料记录ECOG 0分",
+   "severity": "low",
+   "recommendation": "以筛选期最新评估为准"
+  }
+ ],
+ "rollup_warnings": [],
+ "overall_recommendation": {
+  "_示例说明": "带 或组 的条目以组为单位参与汇总，不逐条参与（详见 judgment-schema.md 的汇总口径）。计数按上方摘录条目重算。",
+  "conclusion": "需补充信息",
+  "met_count": 5,
+  "not_met_count": 1,
+  "uncertain_count": 2,
+  "missing_count": 1,
+  "blocking_issues": [
+   "IN-10-7: 肌酐清除率数据缺失"
+  ],
+  "key_concerns": [
+   "EX-2-3: 参考日期缺失，镭-223 治疗时间窗悬置"
+  ]
+ }
+}
