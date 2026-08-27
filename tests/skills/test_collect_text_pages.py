@@ -163,9 +163,40 @@ def test_collect_writes_md_for_each_text_page(ws):
         p = ws / "ocr" / "S" / f"S_page_{j:03d}.md"
         assert p.exists()
         body = p.read_text(encoding="utf-8")
-        assert "来源文本层" in body and f"第 {j} 页" in body
+        # 来源标注与扫描页共用 `（来源图片：…）` 前缀（页块契约见
+        # tests/skills/test_ocr_provenance_contract.py），`文本层` 标识说明该页未经 OCR。
+        assert body.startswith("（来源图片：") and f"第 {j} 页" in body
+        assert "文本层" in body
         assert "未经 OCR" in body
         assert "KRAS p.(G13D) 26.29%" in body, "正文必须逐字进来"
+
+
+def test_collect_provenance_is_virtual_path_not_host_path(ws):
+    """会话 156a476e：来源标注必须写容器虚拟路径，不得泄漏宿主机绝对路径。
+
+    沙箱执行命令前会把命令行里的 `/mnt/user-data/...` 重写成宿主机真实路径（否则脚本
+    open() 不到文件），但 `.md` 产物里的来源行是**数据**——local_sandbox 对数据文件不做
+    反向翻译（`_DATA_CONTENT_EXTENSIONS`），下游 `ocr_page_index.py` 的 PROVENANCE_RE
+    与扫描页 OCR 的 `（来源图片：/mnt/user-data/...）` 也只认虚拟路径。归集脚本必须把
+    收到的宿主机 workspace 换算回 `/mnt/user-data/workspace/...` 再写。
+    """
+    build_source(ws, "S", scanned=1, text=1)
+    ctp.collect(ws)
+    body = (ws / "ocr" / "S" / "S_page_002.md").read_text(encoding="utf-8")
+    assert "（来源图片：/mnt/user-data/workspace/images/S/S_page_002.txt 文本层" in body
+    assert str(ws) not in body, "宿主机绝对路径不得泄漏进产物"
+
+
+def test_collect_provenance_already_virtual_workspace_unchanged(ws):
+    """换算函数对任意形态的 workspace 都输出稳定的虚拟路径（相对 workspace 拼接）。"""
+    build_source(ws, "S", scanned=1, text=1)
+    p = ws / "images" / "S" / "S_page_002.txt"
+    assert ctp.virtual_user_data_path(p, ws) == f"/mnt/user-data/workspace/images/S/S_page_002.txt"
+
+
+def test_virtual_path_helper_falls_back_when_outside_workspace(ws):
+    """路径不在 workspace 下时原样返回，不硬造虚拟路径。"""
+    assert ctp.virtual_user_data_path(Path("/etc/hosts"), ws) == "/etc/hosts"
 
 
 def test_collect_does_not_fabricate_key_fields(ws):
