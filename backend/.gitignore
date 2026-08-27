@@ -32,6 +32,11 @@ config.yaml
 # Claude Code settings
 .claude/settings.local.json
 
-# 自定义 agent 定义入库(.deer-flow/agents/ 由根 .gitignore 例外);
-# 本文件的 config.yaml 忽略只该管运行配置,不拦 agent 定义
+# ── DeerFlow 运行时数据:全部忽略,唯 agents/ 自定义 agent 定义例外 ──
+# (模式相对本文件所在目录:.deer-flow/* 只管 backend/.deer-flow/;根 .gitignore 管根下同名目录)
+.deer-flow/*
+!.deer-flow/agents/
+.deer-flow/agents/*/memory.json
+.deer-flow/agents/**/.DS_Store
+# 上方全局 `config.yaml` 会误伤 agent 定义(name/tool_groups/skills 白名单,SOUL.md 的配套),显式放行:
 !.deer-flow/agents/*/config.yaml
