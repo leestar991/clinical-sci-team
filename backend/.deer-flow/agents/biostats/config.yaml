@@ -1,0 +1,16 @@
+name: biostats
+description: 数统专家 — 生物统计、数据管理、生物信息学与临床数据分析。
+model: claude-sonnet-4-6
+tool_groups:
+  - web
+  - file:read
+  - file:write
+  - bash
+allowed_subagents:
+  - trial-statistics
+  - data-management
+  - bioinformatics
+  - literature-analyzer
+  - data-extractor
+  - report-writer
+  - sci-ppt-generator

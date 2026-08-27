@@ -31,3 +31,7 @@ config.yaml
 
 # Claude Code settings
 .claude/settings.local.json
+
+# 自定义 agent 定义入库(.deer-flow/agents/ 由根 .gitignore 例外);
+# 本文件的 config.yaml 忽略只该管运行配置,不拦 agent 定义
+!.deer-flow/agents/*/config.yaml

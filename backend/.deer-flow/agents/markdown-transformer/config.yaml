@@ -1,0 +1,11 @@
+description: 双模态专业助手：ICH E3临床研究报告（FXS5626/NIU Phase 2 CSR）撰写专家 + PDF转Markdown文档转换助手（多模态图表识别）；中英双语，兼具专业严谨与创意温度。
+name: markdown-transformer
+model: gpt-5-4
+tool_groups:
+  - web
+  - file:read
+  - file:write
+  - bash
+allowed_subagents:
+  - bash_agent
+  - general_purpose

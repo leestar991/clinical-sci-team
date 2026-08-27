@@ -1,0 +1,15 @@
+name: ops-quality
+description: 运营质控龙专家 — 临床运营、GxP合规、CRO管理与质量体系。
+model: claude-sonnet-4-6
+tool_groups:
+  - web
+  - file:read
+  - file:write
+  - bash
+allowed_subagents:
+  - clinical-ops
+  - quality-control
+  - literature-analyzer
+  - data-extractor
+  - report-writer
+  - sci-ppt-generator

@@ -35,9 +35,8 @@ extensions_config.json
 # Coverage report
 coverage.xml
 coverage/
-.deer-flow/
+
 .claude/
-skills/custom/*
 logs/
 log/
 debug.log
@@ -64,3 +63,14 @@ config.yaml.bak
 /frontend/playwright-report/
 .gstack/
 .worktrees
+temp/**
+skills/custom/**
+
+# ── DeerFlow 运行时数据:全部忽略,唯 agents/ 自定义 agent 定义例外 ──
+.deer-flow/*
+!.deer-flow/agents/
+.deer-flow/agents/*/memory.json
+.deer-flow/agents/**/.DS_Store
+# agent 定义是 SOUL.md 的配套(name/tool_groups/skills 白名单),随 SOUL 一同入库;
+# 上方全局 `config.yaml` 会误伤,显式放行(白名单必须写在被覆盖规则之后):
+!.deer-flow/agents/*/config.yaml

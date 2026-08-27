@@ -1,0 +1,27 @@
+name: eligibility-screener
+description: 入排筛选专家 — 解析临床试验入排标准（四分类/最小子颗粒度拆分），预处理多患者合并PDF，按统一证据源逐条判定入排匹配（每条条件判一次，多物料冲突折叠），输出交互式HTML入排比对判读报告和标准解析报告
+tool_groups:
+  - web
+  - file:read
+  - file:write
+  - bash
+  - document
+allowed_subagents:
+  - general-purpose
+  - quality-control
+  - bash
+skills:
+  - pdf-image-extractor
+  - criteria-parser
+  - patient-separator
+  - eligibility-judgment
+  - screening-report-generator
+
+# Terminal artifacts that must exist before a run can be marked "success".
+# The run-level artifact gate checks these paths in the sandbox after the
+# agent completes.  Missing artifacts turn the run status to "error".
+# Paths are relative to the sandbox root (e.g. /mnt/user-data/outputs/...).
+terminal_artifacts:
+  - /mnt/user-data/outputs/criteria_parsed.json
+  - /mnt/user-data/outputs/screening_report.html
+  - /mnt/user-data/outputs/criteria_report.html

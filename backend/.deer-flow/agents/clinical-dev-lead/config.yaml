@@ -1,0 +1,28 @@
+name: clinical-dev-lead
+description: 虚拟临床开发团队总协调器，将复杂任务分解并委派给各职能专家团队。
+# 编排层需要强推理能力来分解查询、综合多专家输出、处理冲突
+model: claude-sonnet-4-6
+tool_groups:
+  - web
+  - file:read
+  - file:write
+allowed_subagents:
+  - general-purpose
+  - literature-analyzer
+  - data-extractor
+  - report-writer
+  - cmo-gpl
+  - gpm
+  - parkinson-clinical
+  - trial-design
+  - trial-statistics
+  - data-management
+  - drug-registration
+  - pharmacology
+  - toxicology
+  - chemistry
+  - bioinformatics
+  - clinical-ops
+  - quality-control
+  - report-writing
+  - sci-ppt-generator
