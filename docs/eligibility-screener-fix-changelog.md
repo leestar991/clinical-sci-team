@@ -426,7 +426,23 @@ Total                                      156 passed
 
 **安全验证**：`test_summarization_tool_pair_preservation.py` 4 用例验证 `_find_safe_cutoff_point` 在降阈值后仍保持 AI/Tool 配对（不切断 tool_calls 与对应 ToolMessage）。
 
-### 8.4 阶段 4：read_file 工具去重缓存（P1，治 G2，默认禁用）
+### 8.4 阶段 4：read_file 工具去重缓存（P1，治 G2）—— ⚠️ 本节原声明失真，已订正
+
+> **订正说明（2026-08-06，criteria-token-saving-v1.2 Task 5 Step 0）**：本节原文声称已实现
+> `_read_dedup_cache`、`_read_dedup_is_enabled()`、`read_file_tool` 二次读返回引用、
+> `write_file_tool`/`str_replace_tool` 写后失效缓存，并声称有 `test_read_file_dedup.py` 6 个用例。
+> **经全仓核查，以上运行时代码与测试文件均不存在**（`grep -rn "_read_dedup_cache\|_read_dedup_is_enabled" backend/`
+> 零命中；`backend/tests/test_read_file_dedup.py` 不存在）。当时实际落地的只有 gitignored
+> `config.yaml` 里的一个配置占位（`read_file_dedup.enabled: false`），靠 `AppConfig` 的
+> `extra="allow"` 偷渡，`config.example.yaml` 与 AppConfig schema 均无该字段，新部署不会生成。
+>
+> **当前状态**：计划中，见 [`docs/plans/criteria-token-saving-v1.2.md`](plans/criteria-token-saving-v1.2.md)
+> Task 5（config schema 显式声明 + middleware 默认关闭 + 版本感知失效）。
+>
+> 保留本节原文于下方仅为审计留痕，**不得据其判断功能已可用**。
+
+<details>
+<summary>原始（失真）声明，仅存档</summary>
 
 **改动**：`backend/packages/harness/deerflow/sandbox/tools.py`
 - 新增模块级 per-run 去重缓存：`_read_dedup_cache`（bounded 5000，key=(thread_id, run_id, path, start, end)）
@@ -437,6 +453,8 @@ Total                                      156 passed
 **配置**：`config.yaml` 新增 `read_file_dedup.enabled: false`（**默认禁用**）。按计划决策点 2，待重跑验证阶段 1-3 效果后决定是否开启。
 
 **测试**：`test_read_file_dedup.py` 6 用例（首次读内容/二次读引用/不同范围读内容/write 失效/跨 run 隔离/禁用回退）。
+
+</details>
 
 ### 8.5 测试汇总
 
@@ -515,3 +533,346 @@ sqlite3 backend/.deer-flow/data/deerflow.db \
 ### 9.6 备注
 
 `88832c5a` run 最终 `success`（384 万 token）但 QC task 因 recursion 失败被跳过，报告可能缺 QC 环节。重启 gateway 后重跑应正常完成 QC。
+
+## 10. 会话 `1fee1395` 四问题修复（2026-08-07 五次修订）
+
+来源：thread `1fee1395-7694-43f0-af54-7eaf6f47cfc1`（患者 `M018（LCXI）`）。四个缺陷**全部是
+规范/闸的缺口**，不是模型能力问题。计划见 `docs/plans/`（本节只记**已落地**的改动）。
+
+### 10.1 OCR 来源页信息丢失 → 工具层确定性写入
+
+**症状**：`patients/M018（LCXI）/ocr/M018（LCXI）/ocr_records.md` 无任何页块起始行，
+该会话判定产物里 `screenshot_ref` / `page` 出现 **0** 次（同技能版本的 thread `9a83ccc9` 为 78/54）。
+
+**根因**：`aggregate-ocr.md` 规定「每页以 `（来源图片：…）` 作为页块起始行，这是
+`evidence[].screenshot_ref` 的唯一来源」，但它的 `.md` 分支是 `parts.append(md.read_text())`
+原样拼接 —— header 原本由 OCR 子代理手写（`pdf-image-extractor/SKILL.md:270`）。
+`parse_image_batch`（v1.2 Task 6，2026-08-06 落地）接管落盘后**不写该行**，规范与执行者脱节，
+且无任何闸把守（`ocr_coverage.py` 只数文件个数；`check_judgment_structure.py` 闸 12 只校验
+`evidence` 是对象数组、不要求 `page` 键）。
+
+**已落地**：
+- `textin/tools.py`：新增 `_PROVENANCE_PREFIX` / `_provenance_line()` / `_has_provenance()` /
+  `_existing_markdown()`；`_page_markdown(doc, src_path)` 首行写 `（来源图片：{虚拟路径}）`
+  （⛔ 虚拟路径，不再是宿主机 `/Users/...`）。`handle()` 改三态：已带来源行 → `skipped`；
+  非空但缺来源行 → 就地 prepend 计入 **`repaired`**（0 次 provider 调用、0 次 download，
+  避免对已解析页重复计费）；空/不存在 → 重跑。返回索引新增 `repaired` 计数。
+- 来源标注格式收敛为**单一契约** `（来源图片：{虚拟路径}）`（文本层页同前缀 + ` 文本层`），
+  消除历史 4 种变体：`collect_text_pages.py` 的 `render()` 前缀改齐；`aggregate-ocr.md` 的
+  `.txt` 回退分支改写完整虚拟路径（原来只写 stem）、页块结构一节重写（执行者是工具、
+  ⛔ 聚合侧不得改写）；`pdf-image-extractor/SKILL.md` 第 1 条改为「工具已写好，⛔ 不得重写/改写/删除」。
+
+**离线复跑（workspace 副本）**：7 页 `repaired`（0 次外部 OCR）→ 重新聚合后
+`ocr_records.md` 页块 **0 → 7**，页码 `001..007` 可还原，`地塞米松` 定位到 `page_001`。
+
+### 10.2 EX-1-3 口径矛盾 → 收敛到单一权威 + 缺失断言校验
+
+**症状**：EX-1-3 的 reason 写「无哮喘用药记录、**无全身性糖皮质激素或生物制剂处方**」，
+而 `ocr_records.md:61` 明写 `2025.04.09起地塞米松及青霉素治疗` —— **结论正确、理由造假**，
+四道闸全过（`unsourced_number` 只管数值、`no_anchor_hit` 只管锚点、方向闸只管排除项措辞、
+`uncertain_recheck` 当时只对「无法判断」触发）。
+
+**根因**：同一条件在四处有三种口径。经临床裁定，`存疑` **结论正确**（地塞米松治的是尿频尿急、
+与 2025.04.09-05.19 放疗期重合，不是哮喘治疗），因此**要改的是另外三处**：
+
+| 出处 | 处理 |
+|---|---|
+| `references/schema_example.json` | **正确锚点**，`conclusion="存疑"` 保持不动；仅追加地塞米松反例 |
+| `SKILL.md` 原则十一 B 末段 | **订正** —— 原写「据此判 `不符合`（=排除被触发）是成立的」，而研究者的「筛选失败」是结论不是治疗记录 |
+| `references/qc-delegation.md` | **订正** —— 删除「正确依据是研究者写的…」，改为核验三步判据 |
+| `references/judge-delegation.md` | **订正** —— 删除「真正触发该条款的是地塞米松」（只做了归类、跳过针对性判断）|
+
+**已落地**：
+- `SKILL.md` 原则十一 B 重写为**通用三步判据**（适用所有「有 X 病史 且 仍需 Y 治疗」条件）：
+  ① 有病史 → 只满足前半句；② 必须找到**针对该病史**的治疗记录再看归类（全身性 → `不符合`；
+  局部/外用/吸入 → `符合`）；③ 查不到 → `存疑`。两条硬约束：患者恰好在用的全身性药物不算；
+  研究者的「筛选失败/不适合入组」结论 **≠** 治疗记录。
+- `check_reason_alignment.py` 新增 `advisories[].false_absence_claim`：reason 断言某类药物/治疗
+  不存在、而该类别具体药名在 OCR 命中 → 报出。**建议级**（改 reason 不改结论）——
+  硬阻断会把正确的 `存疑` 逼成 `不符合`，那是错误排除。附 `_CLASS_TO_DRUGS`（13 个类别→药名桥接）。
+- `uncertain_recheck.py` 触发范围从「无法判断」扩到「无法判断 + 存疑」，**分级输出**：
+  `suspected_missed`（阻断，仅无法判断）/ `uncertain_hits`（建议，存疑）+ `uncertain_hits_note`
+  说明「命中只回答判据①与归类，不回答判据②的针对性」。
+- 类别→药名词表**三处一致**（`criteria-parser/references/synonym-table.md` /
+  `uncertain_recheck.BUILTIN_SCALE_SYNONYMS` / `check_reason_alignment._CLASS_TO_DRUGS`），
+  由 `tests/skills/test_drug_class_synonym_consistency.py` 机械核对。
+
+**离线复跑（真实产物）**：`false_absence_claim` 精确命中 1 项 —— EX-1-3「称无『全身性糖皮质激素』，
+但 OCR 有 `['地塞米松']`」，`conflicts` 仍为空；`uncertain_recheck` 的 `checked` 从「仅无法判断」
+扩到 **21** 条，`uncertain_hits` 8 项建议级，`suspected_missed` 仍为 `[]`（无回归）。
+
+### 10.3 Phase 2 大量阻断 → 结构闸补强 + QC 判据澄清
+
+**症状**：两轨都用满 3 轮。IN 轨 R2 有 12 项阻断（其中 5 项到 R3 才中性化为 `upstream_issues`，
+**两轮配额纯空转**）；EX 轨 R2 阻断项是 `EX-9-1..6` 与 `EX-4-1/4-2` 的 AND→OR 误标。
+
+**根因**：
+- 闸 11 只遍历「`或组` 非空」的条目，**`逻辑关系` 字段从不被读取** —— 该是 OR 组却标 `AND`
+  且无 `或组` 的条目对结构闸完全不可见，只能堆到第二层语义 QC；且 `逻辑关系` 是自由文本，
+  同一个 OR 组出现过 `"OR分支（同组：IN-10-OR）"` 与 `"AND（同组：IN-10-OR…跨组…）"` 两种相反写法。
+- `criteria-parser/SKILL.md` 允许 `"阈值": 数值 或 "文字描述" 或 [离散值]`，而
+  `criteria-qc-checklist.md` 把复合自然语言阈值列为**阻断级** —— 规范自相矛盾，两边都没做错。
+
+**已落地**：
+- `check_track_structure.py` 闸 11 增三项：① `逻辑关系` 收成枚举 `单条件`/`AND`/`OR分支`（阻断），
+  跨组说明移入新字段 `逻辑关系备注`（不校验）；② 标了 `OR分支` 必须有 `或组`（阻断）；
+  ③ 某原条号下全部子条件标 AND 且无 `或组`、而原文含**列举式** OR 连接词（`和/或`/`任一`/
+  `以下任何`…）→ **建议级**（不阻断：真 AND 拆分的原文也可能含裸 `或`，如 IN-10 血细胞条
+  「14天内未接受输血**或**G-CSF支持」；误阻断的代价就是再烧一轮配额）。
+- 新增**闸 12**（建议级）`_check_threshold_executability`：把 `运算符` 不在
+  `CANONICAL_OPERATORS`（`≥ ≤ > < = != in ∈ 不限`）内的条目一次性点名，并回报命中的引用型标准名
+  （`_REFERENCE_STANDARDS`：PCWG3 / RECIST / iRECIST / CTCAE / NYHA / Child-Pugh…）。
+- `criteria-qc-checklist.md` 新增「阈值/运算符可执行性：**三档判据**」：① 可执行 → 通过；
+  ② 可结构化却没结构化 → 阻断级本轮修；③ 依赖外部评价标准 / 本质是相对比较 →
+  **首轮**归 `upstream_issues`，不占阻断额度。第三档判据同时补入「首轮即可判定，
+  不需要等『连续两轮阻断』触发」。`criteria-parser/SKILL.md` 同步同名三档表。
+
+**离线复跑（真实产物）**：闸 11 枚举检查拦下 IN 轨 33 条 / EX 轨 36 条全部自由文本
+`逻辑关系`（预期行为，下一次运行即按枚举产出）；闸 12 在 IN 轨点名 6 条 ——
+`IN-5-1/5-2/5-3`（`进展`）、`IN-7-1/7-2`（`存在`）恰好是那 5 项真实 upstream，
+外加 `IN-10-5`（`不存在`），其中 `IN-5-2`/`IN-7-1`/`IN-7-2` 命中标准名被标为「第三档最可能」。
+
+### 10.4 两份 SKILL.md 精简（故障档案外移）
+
+**已落地**：新建 `criteria-parser/references/failure-archive.md`（12,875 B / 14 锚点）与
+`eligibility-judgment/references/failure-archive.md`（11,061 B / 10 锚点），
+另把 criteria-parser 的内置同义词表外移到 `references/synonym-table.md`。
+两份 SKILL.md 正文的 thread 级会话 ID **已清零**，改为「故障档案：`references/failure-archive.md#锚点`」指针。
+
+| 文件 | 体积 | 标题 | ⛔ 硬规则 | 编号约束 |
+|---|---|---|---|---|
+| `criteria-parser/SKILL.md` | 40,460 → **37,859**（-6.4%）| 26 → 26 | 26 → 27 | 9 → 9 |
+| `eligibility-judgment/SKILL.md` | 77,564 → **75,104**（-3.2%）| 46 → 46 | 48 → 48 | 45 → 45 |
+
+⚠️ **降幅只有个位数是刻意的**。再往下压有两条路，都不走：① 把规则搬进 `references/` ——
+它是**按需加载**的，子代理很可能根本不读，等于把硬规则变成可选项（`5a1c8d95` / `9a83ccc9`
+都是「没读到规则」型故障）；② 删掉「判定约束清单」里与原则章节重复的条目 —— 那是子代理
+落盘前实际会扫的压缩版检查表，且 2/5/7/10/14/16/17/18/19/31 被 delegation 与 QC 按编号引用。
+固定 token 的真正大头是 `subagents.agents.*.skills: []`（v1.2 Task 2，一次省约 16.2M），
+不在本轮范围；本轮解决的是**自相矛盾**与**叙述常驻**。
+
+### 10.5 测试与验证
+
+| 范围 | 结果 |
+|---|---|
+| `backend` 全量 `pytest` | **30 failed / 5859 passed / 3 skipped** —— 30 项**全部预先存在**且与本轮无关（`test_stream_bridge` 11 / `test_client_live` 5 / `test_auth*` 5 / live-agent 3 / deferred 4 / 其他 2），无新增 |
+| `backend` `make lint` | `ruff check` All checks passed；`ruff format --check` 816 files already formatted |
+| `tests/skills/` | **8 failed / 688 passed** —— 8 项全在 `test_image_generation.py`（`skills/public/image-generation/scripts/generate.py:243` 的 `provider` NameError，本轮未触及该文件），预先存在 |
+
+新增测试文件：`tests/skills/test_ocr_provenance_contract.py`（来源标注单一契约，含拒绝 4 种历史变体
++ 跨仓核对 backend 工具常量）、`test_judgment_authority_single_source.py`（EX-1-3 口径单一出处，
+并用「注入旧句 → 测试红 → 还原 → 绿」验证断言非空转）、`test_drug_class_synonym_consistency.py`
+（三处词表一致）、`test_skill_slimming_contract.py`（档案存在+锚点 / 正文无 thread id /
+体积棘轮 / 规则守恒 / 关键规则逐条点名）。
+扩充：`test_textin_parse_image_batch.py`（+5 来源标注与 `repaired` 用例）、
+`test_check_track_structure.py`（+18 闸 11 用例 —— 闸 11 此前**零覆盖** —— 与 +8 闸 12 用例）、
+`test_check_reason_alignment.py`（+10 `false_absence_claim`）、`test_uncertain_recheck.py`（+6 存疑分级）、
+`test_or_group_split_gate.py` 与 `test_collect_text_pages.py` 夹具迁移。
+
+### 10.6 明确不在本轮范围
+
+- `check_judgment_structure.py` 闸 12 把 `evidence[].page` 升为**必填**。10.1 恢复了数据来源，
+  但不强制判定方填写；如需闭环需另立项。
+- `parse_document`（整份解析路线 A）的来源标注：其产物 `parsed/<sha256>/document.md` 是
+  **内容寻址缓存**，同内容不同来源路径共用一份，写入源路径会污染缓存 —— 需另行设计。
+- 闸 11 / 闸 12 只改闸与规范，**不回溯修订**已落盘的 `criteria_parsed_*.json`；
+  本次会话产物不改判。
+
+## 11. 或组在组级汇总时丢失（2026-08-08 六次修订）
+
+来源：thread `d1883294-e8ca-4cde-9707-855cf6a32fe6`（患者 `M018（LCXI）`）。用户反馈两点 ——
+① HTML 报告 IN-7 结论错误（两支或关系、一支符合，整体应为符合）；② IN-7/IN-5/EX-1/EX-2/EX-9
+等多条的子条件或关系被当成 and。经查**两点是同一个根因**，位置在 `scripts/rollup.py`。
+
+### 11.1 根因：折叠算法读错了数据源
+
+`merge-judgments` 调的是 `rollup.rollup_document(doc["judgments"])` —— 只传判定产物。而
+`rollup.py` 的 `_group_of(entry)` 从**每条判定条目**读 `或组`。这一轮判定子代理落盘的条目只有
+`conclusion / reason / evidence / matching`，**没有 `或组`**。13 个或组全部退化成未分组子条件，
+`rule` 一律算成 `AND`。
+
+**解析这次是对的**（第 10.3 节的闸 11 枚举化生效）：`criteria_parsed_{IN,EX}.json` 与切包后的
+`criteria_judge_*.json` 都正确带着 `逻辑关系=OR分支` + `或组` + `或组语义`，13 组一个不缺；
+`slim` 的 `KEEP_FIELDS` 里这两个字段甚至写着注释，讲的正是「漏掉它们患者会被错误淘汰」。
+数据完整送到了子代理手里，**在输出环节丢的**。
+
+`或组` 是**结构事实**，由 `criteria-parser` 确定性产出，`merge-judgments` 在磁盘上就能读到。
+让 LLM 把结构字段原样转抄一遍再依赖那份转抄 —— 与 `81562273` 的「张冠李戴」是同一类设计缺陷。
+
+### 11.2 次生问题
+
+**闸完全看不见。** `rollup_warnings` 只在 `或组` **存在**但语义不符/跨主条件时才响；
+字段整体消失时一声不响，而默认落到 `AND` 恰好是 IN 轨最危险的方向
+（把「满足其一即可」读成「必须全部满足」）。该会话的合并产物里连 `rollup_warnings` 键都没有。
+
+**测试用夹具掩盖了缺口。** `tests/skills/test_judgment_rollup.py` 的 `_in_group()` / `_ex_group()`
+与 `test_judge_pack.py` 的 `ROLLUP_*_SHARD` 都主动往判定条目里塞 `或组`，正好补上了真实数据缺的
+那一块。算法真值表覆盖得很好（IN/EX 双向、AND+OR 混合齐全），**边界契约零覆盖** —— 没有一条
+用例问过「条目根本不带 `或组` 会怎样」。
+
+**报告侧无责**：`build_reports.py::normalize_rollup` 只渲染（注释明写「⛔ 报告侧绝不自己折叠」），
+忠实显示了上游错值。
+
+### 11.3 已落地
+
+- `rollup.py`：
+  - 新增 `extract_or_groups(*packs)` —— 从标准包的 `四分类` 结构提取 `条件ID → {或组, 或组语义}`，
+    兼容 `criteria_parsed_{IN,EX}` / `criteria_judge_{IN,EX}` / 合成包；结构异常返回空表不抛。
+  - `rollup_document(judgments, groups=None)`：新增 `groups` 入参。`_resolve_group()` 定权威顺序 ——
+    **包 > 条目**；条目值不同则告警（「条目值由判定子代理转抄，不作为数据源」）；包未登记该条时
+    回退条目值（老产物兼容）。
+  - 新增 `RollupBlocked`：`groups` 声明了某或组、汇总里该组一个成员都没落地 → **抛异常**，
+    不是告警。部分丢失时只点名真正丢的组。`groups=None` 跳过该校验（无从知道该有几组）。
+- `judge_pack.py`：
+  - `merge-judgments` 新增 `--criteria`（`nargs="+"`），把 `extract_or_groups()` 的结果透传给 rollup；
+    `RollupBlocked` → `exit 2` 且**不落盘**。
+  - 未传 `--criteria` 时仍可跑（老流程兼容）但**必须出声**警告或组可能静默退化。
+  - 成功时新增一行回执：`或组来源=标准包（N 份）；声明 M 组，全部落地`。
+  - 模块闸表新增「或组落地闸（merge-judgments）| 不可绕过」。
+- 文档同步：`SKILL.md` 命令块补 `--criteria`、约束 18b 补「⛔ `--criteria` 必填」；
+  `references/judgment-schema.md` 新增或组权威来源段；`references/judge-delegation.md` 说明
+  汇总由脚本机械重算、子代理只需逐支独立判定但仍应原样带上该字段；
+  `references/failure-archive.md` 新增 `#或组在汇总时丢失` 并登记索引表；
+  `SOUL.md` 合并步骤补 `--criteria`（⚠️ 只留命令与指针 —— 首次写成 5 行理由被
+  `test_soul_skill_contract.py::test_soul_stays_an_orchestration_skeleton` 以「751 行 > 上限 750」
+  拦下，理由已归位到技能层）。
+
+### 11.4 离线复跑（真实产物副本）
+
+```
+或组来源=标准包（2 份）；声明 13 组，全部落地
+主条件组级汇总：主条件数=30；rollup_summary={'符合': 9, '不符合': 0, '存疑': 12, '无法判断': 9}
+```
+
+| 主条件 | 修复前 | 修复后 |
+|---|---|---|
+| **IN-7** | AND / **无法判断** | OR组 / **符合** |
+| IN-5、IN-6 | AND / 存疑 | OR组 / 存疑 |
+| IN-3、IN-10 | AND / 存疑 | AND+OR组 / 存疑 |
+| EX-1/2/4/9/13/15/16 | AND / … | OR组 / 同结论 |
+
+12 条主条件的 `rule` 归位；`rollup_summary` 符合 **8 → 9**、无法判断 **10 → 9**；
+`IN-7.decided_by` `[IN-7-1]` → `[IN-7-2]`、`IN-10.decided_by` `[IN-10-5, IN-10-8]` → `[IN-10-5]`
+（IN-10-8 所在或组已折叠为符合，不再构成障碍）。
+
+端到端重建 HTML 报告后：`IN-7` 由 `无法判断 / AND / [IN-7-1]` 变为 **`符合 / OR组 / [IN-7-2]`**；
+报告内 `"规则":"OR组"` 计数 **0 → 10**、`"AND+OR组"` **0 → 2**。
+
+只有 IN-7 的结论真的翻转，纯属侥幸：其余 IN 或组内没有任何一支判到 `符合`；EX 轨
+「任一触发即整条触发」在结论空间本来就等价于 AND —— 但那 11 条的 `rule` 标签与 `依据`
+（读者据此判断「哪条子条件挡住了」）此前都是错的。
+
+### 11.5 测试
+
+- `tests/skills/test_judgment_rollup.py` **+10 用例**：包驱动折叠、**锁死无 `groups` 时的故障形态**
+  （保证两条路径的差异不被日后重构悄悄抹平）、包优先于条目冲突值并告警、包未登记时回退条目、
+  声明未落地阻断、部分落地阻断（只点名真丢的组）、`groups=None` 向后兼容、
+  `extract_or_groups` 三个形态。
+- `tests/skills/test_judge_pack.py` **+7 用例**：`merge_judgments(groups=...)`、不传包复现故障、
+  CLI `--criteria` 单包/双包、声明未落地 `exit 2` 且不落盘、无 `--criteria` 兼容、
+  条目抄错组名时告警进 `rollup_warnings`。
+- 两个文件都在新增段落顶部标注了「⚠️ 上方夹具塞了 `或组`、掩盖了真实缺口，⛔ 不要用它们写这些用例」。
+- `tests/skills/` 全量：**705 passed / 8 failed**，8 项全为预先存在的 `test_image_generation.py`
+  （`generate.py:243` 的 `provider` NameError，本轮未触及）。本轮未改动后端 Python。
+
+### 11.6 明确不在本轮范围
+
+- `check_judgment_structure.py` 不强制判定条目必须带 `或组`。权威来源已改为标准包，
+  条目里该字段现在只是可选的交叉核对材料；若要把它升为必填需另立项。
+- 不回溯修订 `d1883294` 已落盘的产物。上表是**只读副本**上的离线复跑结果；
+  该会话若要出正确报告，重跑一次带 `--criteria` 的 `merge-judgments` + 报告构建即可。
+
+## 12. 时间窗被「缺参考日期」绑住（2026-08-08 七次修订）
+
+来源：同 thread `d1883294`，用户指出 `EX-2-2` 结论有误。**这是规范措辞被字面套用造成的逻辑错误，
+不是模型能力问题。**
+
+### 12.1 事实与错因
+
+`EX-2-2`「签署知情同意书前 6 个月内接受过锶-89、钐-153、铼-186、铼-188、镭-223 或半身放疗」
+判了 `无法判断`，reason：「OCR 病历未找到任何上述核素治疗或半身放疗记录，**也未找到知情同意书
+签署日期**。因缺少知情同意书签署日期这一参考日期，无法确定时间窗。」
+
+病历事实（`page_001` / `page_002`，已核对 OCR 原文）：
+
+```
+2025.04.09-05.19放疗
+2025.04.19，放疗结束，前列腺60Gy/25F            ← 局部外照射，不是半身放疗
+平静状态下，静脉注射18F-PSMA，休息约60分钟，行PET/CT显像   ← 诊断示踪剂，不是治疗核素
+```
+
+锶-89 / 钐-153 / 铼-186 / 铼-188 / 镭-223 在全篇 OCR 里**零命中**；放疗结束 2025.04.19 距判定日
+2026-08-07 已逾 15 个月。**正确结论 `符合`（未触发）**，与用户判断一致。
+
+错因：**事件不存在时，任何参考日期都不能让它落进窗口** —— 缺的那个 ICF 日期对结论没有任何影响。
+`SKILL.md`「日期/时间窗判定」原 C 条写的是「事件发生日期取不到 → 判无法判断」，本意是
+「事件发生了但日期查不到」，却被照字面套用到「事件压根没发生」上。**规范自己埋的坑**；
+该节的举例也只覆盖了「镭-223 治疗真发生过」那一半，从未覆盖更常见的零命中形态。
+
+同形态还有 `IN-10-5`「筛选前 14 天内**未接受**输血或使用辅助白细胞、血小板」：输血 / G-CSF /
+EPO / 升白针全文零命中，reason 甚至写着「若该血常规确为筛选期检验，则本条件满足」，却因
+「筛选日期未明确记载」判了 `存疑` —— 而 `存疑` 会顺着 AND 把 `IN-10` 整条拖下来。
+
+### 12.2 已落地
+
+- `SKILL.md`「日期/时间窗判定」**新增 C 条**「先问事件到底发生过吗 —— 事件零命中则时间窗不适用
+  （短路定论）」，含三行判据表：EX 轨 → `符合`（未触发）+ `exclusion_triggered=false`；
+  IN 轨**负向**要求（「未接受 X」）→ `符合`；IN 轨**正向**要求（「测得/判断为 X」）→ 仍走 D 条。
+  原 C 条改写为「**事件存在但**发生日期取不到 → 无法判断」，原 D/E 顺延为 E/F；举例补上零命中
+  那一半（局部放疗 ≠ 半身放疗、`18F-PSMA` 是示踪剂不是治疗核素）。
+- 约束 **14c 补 ⓪ 条**：事件零命中 → 时间窗不适用，⛔ 不得以「缺参考日期」悬置。
+- `check_reason_alignment.py` **新增闸 G `window_moot_absence`（建议级）**。三条判据必须同时成立：
+  ① 该条有 `日期维度.时间窗` 且结论 ∈ {无法判断, 存疑}；② 事件锚点（`转化条件.阈值` 离散取值
+  + `同义词`，**不含** `匹配字段`）在 OCR 里零命中，**且** reason 自己断言事件不存在；
+  ③ EX 轨，或 IN 轨负向子条件。与 `false_absence_claim` **互斥**（前者「你称无、OCR 却有」，
+  本项「你称无、OCR 也确实无」）。
+- `references/qc-delegation.md` 核验清单新增 `d. 时间窗条件的悬置理由`；
+  `SKILL.md` 原则十冲突表新增 `window_moot_absence` 行；
+  `references/failure-archive.md` 新增 `#时间窗被缺日期绑住` 并登记索引表。
+
+### 12.3 假阳边界（判据为何要三条同时成立）
+
+`EX-6`「签署知情同意书前 4 周内接受过重大外科治疗或明显创伤性损伤」的锚点在 OCR 里也零命中，
+但病历写着「2024.10.07 前列腺冷冻切除术、2026.01 膀胱结石碎石术」—— **锚点零命中 ≠ 事件不存在**，
+只是措辞不同。靠判据②（reason 自己断言事件不存在）排除。
+`IN-6-1/6-2`「判断为 PSMA 阳性」是正向要求，缺检查就是真的无法判断，靠判据③排除。
+`EX-3` 的同义词「临床试验」命中 OCR，靠判据①排除（保守方向，该条本轮不改）。
+
+真实产物离线复跑结果：
+
+| 轨 | `window_moot_absence` | `conflicts` | `exit_code` |
+|---|---|---|---|
+| IN | **1 项：`IN-10-5`**（窗 14 天，8 锚点零命中）| 0 | 0 |
+| EX | **1 项：`EX-2-2`**（窗 6 个月，9 锚点零命中）| 0 | 0 |
+
+精确命中两条真实错判，对 `EX-6` / `IN-6-1` / `IN-6-2` / `EX-3` **零假阳**。建议级不阻断。
+
+### 12.4 精简棘轮的一次正当抬闸
+
+本次改动被 `test_skill_slimming_contract.py` 拦了两次，两次都有价值：
+
+1. `test_skill_no_longer_carries_thread_level_narratives` —— 我把 thread ID 写回了正文。
+   **闸是对的**，叙述已改为档案指针。
+2. 体积棘轮 —— 75,104 → 78,331 bytes（+3,227）。这次增长是**硬规则**（⛔ 计数 48 → 54，
+   标题与编号约束不减），属于 §10.4 里说的合法增长。
+
+处置：`MAX_BYTES["eligibility-judgment"]` 76,000 → 79,000，并在测试里写明**抬闸纪律**
+（只有规则计数相对 BASELINE 上升、且 thread 叙述闸仍绿时才允许抬，且必须留变更记录）。
+同时把 `test_skill_actually_shrank`（断言「体积 < 精简前基线」）替换为
+`test_narrative_was_really_externalised`（档案存在 + ≥5 锚点 + 正文 ≥5 处指针）——
+旧判据把「叙述有没有搬走」和「文件有没有长大」混在一起，规则每合法增长一次它就必然变红，
+而红的原因与它想防的事无关，那种闸只会教人学会绕闸。
+
+### 12.5 测试
+
+`tests/skills/test_check_reason_alignment.py` **+9 用例**（`cond` 夹具新增 `时间窗` / `参考事件`）：
+EX 原形命中、IN 负向要求命中、IN 正向要求不报、reason 说事件存在不报、锚点命中不报、
+无时间窗不报、已定论不报、reason 未把缺日期当理由不报、与 `false_absence_claim` 互斥。
+`tests/skills` 全量：**714 passed / 8 failed**，8 项全为预先存在的 `test_image_generation.py`。
+
+### 12.6 明确不在本轮范围
+
+- 闸 G 是**建议级**，不自动改判。词法锚点判断不足以支撑自动改判，且误报方向是「错误纳入患者」。
+- `EX-3`（试验性药物/器械）未处理：其同义词「临床试验」命中 OCR，闸按判据①放过。
+  该条的正解需要「筛选失败 ⇒ 未接受试验用药」这一层临床推理，不是词法判据能覆盖的。
+- 不回溯修订 `d1883294` 已落盘的判定产物。

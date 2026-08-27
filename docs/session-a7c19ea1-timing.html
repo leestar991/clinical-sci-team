@@ -1,0 +1,362 @@
+<title>a7c19ea1 耗时解剖</title>
+<style>
+  :root {
+    --paper: #ECEEEC;
+    --surface: #F6F7F5;
+    --surface-2: #E4E8E5;
+    --ink: #16201D;
+    --ink-2: #45524E;
+    --ink-3: #6E7A76;
+    --rule: #CBD2CE;
+    --pen: #0F6E62;
+    --pen-soft: rgba(15, 110, 98, 0.13);
+    --pen-line: rgba(15, 110, 98, 0.34);
+    --amber: #8A5E15;
+    --amber-soft: rgba(138, 94, 21, 0.14);
+    --rust: #9C3226;
+    --rust-soft: rgba(156, 50, 38, 0.13);
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, "PingFang SC", "Microsoft YaHei", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  :root:not([data-theme="light"]) {
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0F1413;
+      --surface: #161D1B;
+      --surface-2: #212927;
+      --ink: #DEE5E2;
+      --ink-2: #A5B1AD;
+      --ink-3: #7C8985;
+      --rule: #2B3432;
+      --pen: #46BFA9;
+      --pen-soft: rgba(70, 191, 169, 0.15);
+      --pen-line: rgba(70, 191, 169, 0.4);
+      --amber: #D9A557;
+      --amber-soft: rgba(217, 165, 87, 0.15);
+      --rust: #E67C69;
+      --rust-soft: rgba(230, 124, 105, 0.15);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0F1413;
+    --surface: #161D1B;
+    --surface-2: #212927;
+    --ink: #DEE5E2;
+    --ink-2: #A5B1AD;
+    --ink-3: #7C8985;
+    --rule: #2B3432;
+    --pen: #46BFA9;
+    --pen-soft: rgba(70, 191, 169, 0.15);
+    --pen-line: rgba(70, 191, 169, 0.4);
+    --amber: #D9A557;
+    --amber-soft: rgba(217, 165, 87, 0.15);
+    --rust: #E67C69;
+    --rust-soft: rgba(230, 124, 105, 0.15);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 68rem; margin: 0 auto; padding: 4rem 1.5rem 6rem; }
+  .measure { max-width: 34rem; }
+  h1, h2, h3 { font-family: var(--mono); font-weight: 600; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(1.9rem, 4.4vw, 3rem); letter-spacing: -0.03em; line-height: 1.1; }
+  h2 { font-size: 1.28rem; letter-spacing: -0.015em; }
+  h3 { font-size: 1rem; letter-spacing: -0.01em; }
+  p { margin: 0; }
+  code, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  code {
+    font-size: 0.855em;
+    background: var(--pen-soft);
+    color: var(--pen);
+    padding: 0.1em 0.34em;
+    border-radius: 3px;
+    overflow-wrap: anywhere;
+  }
+  a { color: var(--pen); }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  header { display: flex; flex-direction: column; gap: 1.1rem; }
+  .lede { font-size: 1.075rem; color: var(--ink-2); max-width: 38rem; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 0 1.6rem;
+    font-family: var(--mono); font-size: 0.79rem; color: var(--ink-3);
+    padding-top: 1.1rem; border-top: 1px solid var(--rule);
+  }
+  section { display: flex; flex-direction: column; gap: 1.4rem; margin-top: 4.2rem; }
+  .sec-head { display: flex; flex-direction: column; gap: 0.5rem; }
+  /* headline metrics */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .kpi { background: var(--surface); padding: 1.1rem 1.15rem; display: flex; flex-direction: column; gap: 0.28rem; }
+  .kpi .v { font-family: var(--mono); font-size: 1.62rem; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1; }
+  .kpi .k { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); }
+  .kpi .n { font-size: 0.79rem; color: var(--ink-2); }
+  .kpi.warn .v { color: var(--amber); }
+  .kpi.bad .v { color: var(--rust); }
+  /* stacked share bar */
+  .share { display: flex; height: 2.4rem; border: 1px solid var(--rule); font-family: var(--mono); font-size: 0.7rem; }
+  .share > div { display: flex; align-items: center; justify-content: center; color: var(--paper); letter-spacing: 0.04em; }
+  .share .s-lead { background: var(--pen); }
+  .share .s-sub { background: var(--amber); }
+  .share .s-rest { background: var(--surface-2); color: var(--ink-3); }
+  .legend { display: flex; flex-wrap: wrap; gap: 0 1.4rem; font-family: var(--mono); font-size: 0.76rem; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: 0.42rem; }
+  .swatch { width: 0.72rem; height: 0.72rem; flex: none; }
+  /* waterfall */
+  .fall { display: flex; flex-direction: column; gap: 2px; }
+  .row { display: grid; grid-template-columns: 5.2rem 1fr 4.4rem; gap: 0.7rem; align-items: center; font-family: var(--mono); font-size: 0.76rem; }
+  .row .t { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .row .d { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+  .bar { height: 1.5rem; background: var(--surface-2); position: relative; display: flex; align-items: center; }
+  .bar > i { position: absolute; inset: 0 auto 0 0; display: block; }
+  .bar.lead > i { background: var(--pen-soft); border-left: 2px solid var(--pen); }
+  .bar.wave > i { background: var(--amber-soft); border-left: 2px solid var(--amber); }
+  .bar b { position: relative; font-weight: 500; padding: 0 0.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* tables */
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 0.79rem; background: var(--surface); }
+  th, td { text-align: left; padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th { font-size: 0.69rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; background: var(--surface-2); }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td.wrap-cell { white-space: normal; min-width: 16rem; font-family: var(--sans); }
+  tr.hot td { background: var(--amber-soft); }
+  tr.dead td { color: var(--ink-3); }
+  .pill { display: inline-block; font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase; padding: 0.1rem 0.42rem; border: 1px solid currentColor; }
+  .pill.ok { color: var(--pen); }
+  .pill.fail { color: var(--rust); }
+  .pill.cut { color: var(--ink-3); }
+  /* findings */
+  .find { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .card { background: var(--surface); padding: 1.25rem 1.35rem; display: flex; flex-direction: column; gap: 0.6rem; }
+  .card > .h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.7rem; }
+  .card .sev { font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; }
+  .sev.s1 { color: var(--rust); }
+  .sev.s2 { color: var(--amber); }
+  .sev.s3 { color: var(--pen); }
+  .card p { font-size: 0.925rem; color: var(--ink-2); max-width: 44rem; }
+  .card p strong { color: var(--ink); font-weight: 600; }
+  .trace { border-left: 2px solid var(--pen-line); padding-left: 0.85rem; display: flex; flex-direction: column; gap: 0.25rem; font-family: var(--mono); font-size: 0.76rem; color: var(--ink-2); }
+  .note { font-size: 0.875rem; color: var(--ink-2); max-width: 40rem; }
+  .callout { border: 1px solid var(--rule); border-left: 3px solid var(--pen); background: var(--surface); padding: 1rem 1.2rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .callout .eyebrow { color: var(--pen); }
+  ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.4rem; }
+  li { font-size: 0.9rem; color: var(--ink-2); }
+  li strong { color: var(--ink); font-weight: 600; }
+  footer { margin-top: 4.5rem; padding-top: 1.2rem; border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 0.74rem; color: var(--ink-3); display: flex; flex-direction: column; gap: 0.3rem; }
+  @media (max-width: 34rem) {
+    .wrap { padding-top: 2.5rem; }
+    .row { grid-template-columns: 4.2rem 1fr 3.4rem; font-size: 0.7rem; }
+  }
+</style>
+<div class="wrap">
+  <header>
+    <span class="eyebrow">eligibility-screener · 执行链路解剖</span>
+    <h1>113.9 分钟去哪了</h1>
+    <p class="lede">会话 <code>a7c19ea1</code> 全程 98.1% 的墙钟时间是串行的 LLM 等待——工具执行与 IO 几乎不占时间。真正的瓶颈不是上下文太大，而是模型在思考上花的输出预算。</p>
+    <div class="meta">
+      <span>患者 S042002</span>
+      <span>2026-08-13 16:23:33 – 18:17:25</span>
+      <span>2 run · 15 子任务</span>
+      <span>18,204,491 token</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">总账</span>
+      <h2>时间与 token 的分布</h2>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><span class="k">墙钟总计</span><span class="v">113.9<span style="font-size:0.6em"> 分</span></span><span class="n">6832 秒，跨两个 run</span></div>
+      <div class="kpi"><span class="k">Lead LLM 忙</span><span class="v">3802<span style="font-size:0.6em">s</span></span><span class="n">55.7%，113 次调用</span></div>
+      <div class="kpi"><span class="k">子代理忙</span><span class="v">2906<span style="font-size:0.6em">s</span></span><span class="n">42.5%，7 波并行</span></div>
+      <div class="kpi warn"><span class="k">Reasoning 占比</span><span class="v">78.4%</span><span class="n">输出 token 的绝对多数</span></div>
+      <div class="kpi bad"><span class="k">不可能赢的循环</span><span class="v">12.5<span style="font-size:0.6em"> 分</span></span><span class="n">1.59M token 无产出</span></div>
+      <div class="kpi warn"><span class="k">压缩废弃率</span><span class="v">30%</span><span class="n">54 次尝试 16 次空摘要</span></div>
+    </div>
+    <div class="share" role="img" aria-label="Lead LLM 占 55.7%，子代理占 42.5%，其余 1.9%">
+      <div class="s-lead" style="flex:55.7">LEAD 55.7%</div>
+      <div class="s-sub" style="flex:42.5">子代理 42.5%</div>
+      <div class="s-rest" style="flex:1.9" title="工具执行/IO/空闲 1.9%"></div>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--pen)"></i>Lead LLM 调用窗口并集</span>
+      <span><i class="swatch" style="background:var(--amber)"></i>子代理任务窗口并集</span>
+      <span><i class="swatch" style="background:var(--surface-2);border:1px solid var(--rule)"></i>工具执行 / IO / 空闲 127s</span>
+    </div>
+    <p class="note">两者重叠仅 3 秒——lead 派发子任务后就在轮询里干等，几乎没有真正的并行收益。这意味着优化的杠杆全在「减少 LLM 调用次数」和「减少每次调用的思考量」上，任何 IO 层面的优化最多能省下 127 秒。</p>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">阶段瀑布</span>
+      <h2>17 个时间段，按实际墙钟排列</h2>
+    </div>
+    <div class="fall">
+      <div class="row"><span class="t">16:23:33</span><span class="bar lead"><i style="width:53.7%"></i><b>lead 独跑 · 预处理 + OCR 派发</b></span><span class="d">654s</span></div>
+      <div class="row"><span class="t">16:34:27</span><span class="bar wave"><i style="width:62.4%"></i><b>① 双轨解析 IN/EX（2 次 failed + 2 次 retry）</b></span><span class="d">760s</span></div>
+      <div class="row"><span class="t">16:47:07</span><span class="bar lead"><i style="width:10.7%"></i><b>lead 独跑</b></span><span class="d">130s</span></div>
+      <div class="row"><span class="t">16:49:17</span><span class="bar wave"><i style="width:19.7%"></i><b>② 双轨第 1 轮语义 QC</b></span><span class="d">240s</span></div>
+      <div class="row"><span class="t">16:53:17</span><span class="bar lead"><i style="width:14.9%"></i><b>lead 独跑</b></span><span class="d">182s</span></div>
+      <div class="row"><span class="t">16:56:19</span><span class="bar wave"><i style="width:74%"></i><b>③ 双轨修订（含 901s / 2.58M 的 EX 轨）</b></span><span class="d">901s</span></div>
+      <div class="row"><span class="t">17:11:20</span><span class="bar lead"><i style="width:34.6%"></i><b>lead 独跑 · 调试 QC 脚本 bug</b></span><span class="d">421s</span></div>
+      <div class="row"><span class="t">17:18:21</span><span class="bar wave"><i style="width:9.9%"></i><b>④ 双轨第 2 轮语义 QC</b></span><span class="d">120s</span></div>
+      <div class="row"><span class="t">17:20:21</span><span class="bar lead"><i style="width:36.8%"></i><b>lead 独跑</b></span><span class="d">448s</span></div>
+      <div class="row"><span class="t">17:27:49</span><span class="bar wave"><i style="width:17.2%"></i><b>⑤ EX-12 嵌套逻辑重建</b></span><span class="d">210s</span></div>
+      <div class="row"><span class="t">17:31:19</span><span class="bar lead"><i style="width:20.2%"></i><b>lead 独跑</b></span><span class="d">246s</span></div>
+      <div class="row"><span class="t">17:35:25</span><span class="bar wave"><i style="width:1.6%"></i><b>⑥ QC upstream ID 对齐</b></span><span class="d">20s</span></div>
+      <div class="row"><span class="t">17:35:45</span><span class="bar lead"><i style="width:46.1%"></i><b>lead 独跑</b></span><span class="d">562s</span></div>
+      <div class="row"><span class="t">17:45:07</span><span class="bar wave"><i style="width:3.3%"></i><b>⑦ EX 轨第 3 轮语义 QC</b></span><span class="d">40s</span></div>
+      <div class="row"><span class="t">17:45:47</span><span class="bar lead"><i style="width:100%"></i><b>lead 独跑 · 含 12.5 分钟 provenance 死循环</b></span><span class="d">1218s</span></div>
+      <div class="row"><span class="t">18:06:05</span><span class="bar wave"><i style="width:50.5%"></i><b>⑧ S042002 双轨逐条判定（被用户中断）</b></span><span class="d">615s</span></div>
+      <div class="row"><span class="t">18:16:20</span><span class="bar lead"><i style="width:5.3%"></i><b>取消收尾</b></span><span class="d">65s</span></div>
+    </div>
+    <p class="note">最长的单段是 17:45:47 起的 <strong>1218 秒 lead 独跑</strong>，其中 750 秒耗在一个结构上无法成功的修复循环里（见下）。第二长的是第 ③ 波：单个 EX 轨修订子代理跑了 901 秒、127 步、258 万 token。</p>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">15 个子任务</span>
+      <h2>子代理耗时与 token</h2>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>task</th><th class="n">起</th><th class="n">止</th><th class="n">墙钟</th><th class="n">步</th><th class="n">秒/步</th><th class="n">token</th><th>状态</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr class="dead"><td>call_00_GvHr…3921</td><td class="n">16:34:27</td><td class="n">16:38:42</td><td class="n">255s</td><td class="n">15</td><td class="n">17.0</td><td class="n">266,704</td><td><span class="pill fail">failed</span></td><td class="wrap-cell">入选标准解析 IN 轨 · 产物闸</td></tr>
+          <tr class="dead"><td>call_01_NoBz…0457</td><td class="n">16:34:27</td><td class="n">16:37:37</td><td class="n">190s</td><td class="n">7</td><td class="n">27.1</td><td class="n">161,637</td><td><span class="pill fail">failed</span></td><td class="wrap-cell">排除标准解析 EX 轨 · 产物闸</td></tr>
+          <tr><td>call_01_NoBz…0457-retry1</td><td class="n">16:37:37</td><td class="n">16:44:27</td><td class="n">410s</td><td class="n">48</td><td class="n">8.5</td><td class="n">963,102</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">重试成功</td></tr>
+          <tr><td>call_00_GvHr…3921-retry1</td><td class="n">16:38:42</td><td class="n">16:47:07</td><td class="n">505s</td><td class="n">32</td><td class="n">15.8</td><td class="n">757,252</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">重试成功</td></tr>
+          <tr><td>call_00_z5DW…2563</td><td class="n">16:49:17</td><td class="n">16:52:32</td><td class="n">195s</td><td class="n">22</td><td class="n">8.9</td><td class="n">189,111</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">IN 轨第 1 轮语义 QC</td></tr>
+          <tr><td>call_01_yR8A…8090</td><td class="n">16:49:17</td><td class="n">16:53:17</td><td class="n">240s</td><td class="n">9</td><td class="n">26.7</td><td class="n">92,764</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">EX 轨第 1 轮语义 QC</td></tr>
+          <tr><td>call_00_ZpoY…4662</td><td class="n">16:56:19</td><td class="n">16:59:40</td><td class="n">201s</td><td class="n">33</td><td class="n">6.1</td><td class="n">722,001</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">IN 轨修订</td></tr>
+          <tr class="hot"><td>call_01_6Omv…9968</td><td class="n">16:56:19</td><td class="n">17:11:20</td><td class="n">901s</td><td class="n">127</td><td class="n">7.1</td><td class="n">2,577,745</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">EX 轨修订 · 单任务最重，内含 28 次闸执行</td></tr>
+          <tr><td>call_00_mvLC…6483</td><td class="n">17:18:21</td><td class="n">17:19:26</td><td class="n">65s</td><td class="n">15</td><td class="n">4.3</td><td class="n">103,401</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">IN 轨第 2 轮语义 QC</td></tr>
+          <tr><td>call_01_AMMV…1035</td><td class="n">17:18:21</td><td class="n">17:20:21</td><td class="n">120s</td><td class="n">23</td><td class="n">5.2</td><td class="n">328,234</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">EX 轨第 2 轮语义 QC</td></tr>
+          <tr><td>call_00_aajR…9247</td><td class="n">17:27:49</td><td class="n">17:31:19</td><td class="n">210s</td><td class="n">38</td><td class="n">5.5</td><td class="n">816,564</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">EX-12 嵌套逻辑重建</td></tr>
+          <tr><td>call_00_97Ad…5679</td><td class="n">17:35:25</td><td class="n">17:35:45</td><td class="n">20s</td><td class="n">10</td><td class="n">2.0</td><td class="n">200,244</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">QC upstream ID 对齐</td></tr>
+          <tr><td>call_01_bXon…7479</td><td class="n">17:45:07</td><td class="n">17:45:47</td><td class="n">40s</td><td class="n">17</td><td class="n">2.4</td><td class="n">155,149</td><td><span class="pill ok">ok</span></td><td class="wrap-cell">EX 轨第 3 轮语义 QC</td></tr>
+          <tr><td>call_01_MlAe…3111</td><td class="n">18:06:05</td><td class="n">18:15:40</td><td class="n">575s</td><td class="n">48</td><td class="n">12.0</td><td class="n">—</td><td><span class="pill cut">中断</span></td><td class="wrap-cell">IN 逐条判定 · 用户取消，无终态 usage</td></tr>
+          <tr><td>call_02_fCnK…1211</td><td class="n">18:06:05</td><td class="n">18:16:20</td><td class="n">615s</td><td class="n">37</td><td class="n">16.6</td><td class="n">—</td><td><span class="pill cut">中断</span></td><td class="wrap-cell">EX 逐条判定 · 用户取消，无终态 usage</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout">
+      <span class="eyebrow">计时口径警告</span>
+      <p class="note">子代理的每步耗时<strong>不能</strong>从 <code>run_events</code> 取。<code>subagent_run_event()</code> 不写 <code>created_at</code>，而 <code>SubagentStepEventBuffer</code> 按 <code>FLUSH_THRESHOLD=25</code> 攒批落盘——127 步的任务在库里只有 7 个不同秒值。上表的时间来自 <code>logs/gateway.log</code> 的 <code>task_tool</code> 轮询行（<code>asyncio.sleep(5)</code>，5 秒分辨率）；retry 任务没有 <code>Started background task</code> 行，起点须取 executor 的 <code>starting async execution</code> 行。</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">瓶颈定性</span>
+      <h2>是 reasoning 密集，不是上下文膨胀</h2>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>input 区间</th><th class="n">次数</th><th class="n">平均延迟</th><th class="n">累计</th><th class="n">平均输出</th><th class="n">reasoning 占比</th><th class="n">cache 命中</th></tr></thead>
+        <tbody>
+          <tr><td>&lt; 50k</td><td class="n">3</td><td class="n">13.6s</td><td class="n">41s</td><td class="n">957</td><td class="n">72%</td><td class="n">99.3%</td></tr>
+          <tr class="hot"><td>50k – 100k</td><td class="n">86</td><td class="n">31.9s</td><td class="n">2741s</td><td class="n">2,346</td><td class="n">81%</td><td class="n">84.2%</td></tr>
+          <tr><td>100k – 150k</td><td class="n">7</td><td class="n">74.6s</td><td class="n">522s</td><td class="n">6,607</td><td class="n">68%</td><td class="n">95.7%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">延迟随 <strong>输出</strong> 量增长，不随输入量增长：cache 命中率 85.4%（709 万 / 830 万 input token 命中），最慢的一次调用（157 秒）input 只有 89,976，但输出 11,155 token、其中 10,214 是 reasoning。全程 96 次 lead 调用输出 250,862 token，吞吐 <strong>75.9 out-tok/s</strong>——把 reasoning 预算压下来，能直接兑换成墙钟。</p>
+    <div class="callout">
+      <span class="eyebrow">压缩开销</span>
+      <p class="note">54 次压缩尝试中 <strong>16 次因空摘要放弃</strong>（30%），全部发生在子代理侧，特征一致：<code>finish_reason='length'</code>、<code>output_tokens≈8192</code>、reasoning 吃掉 13k–25k 字符。上一轮的 <code>_summary_is_usable</code> 修复确实生效了——38 次生效压缩的 <code>summary_chars</code> 全非零，不再净删除历史；但根因未除：<code>deepseek-v4-flash</code> 的 <code>max_tokens: 8192</code> 被 reasoning 占满。lead 侧（<code>trim_tokens_to_summarize: 80000</code>）零废弃，子代理已降到 40000 仍不够。按 lead 侧均值 30.9 秒估算，这 16 次浪费约 <strong>494 秒</strong>。</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">最大单点浪费</span>
+      <h2>一个在构造上无法成功的循环</h2>
+    </div>
+    <div class="find">
+      <div class="card">
+        <div class="h"><span class="sev s1">S1 · 750 秒 / 1.59M token / 零产出</span></div>
+        <p>17:50:58 – 18:02:29，lead 用 <strong>17 次调用</strong>反复试图把 OCR 来源标注里的宿主路径改成虚拟路径。这个循环永远不可能收敛，因为读写两端做了<strong>方向相反</strong>的路径翻译：</p>
+        <div class="trace">
+          <span>写入 · <code>LocalSandbox.write_file</code> → <code>_resolve_paths_in_content()</code> 把 <code>/mnt/…</code> 正向翻译成宿主路径落盘</span>
+          <span>读出 · <code>LocalSandbox.read_file</code> 对 <code>_agent_written_paths</code> 内的文件 <code>_reverse_resolve_paths_in_output()</code>，把宿主路径反向翻译回 <code>/mnt/…</code></span>
+          <span>结果 · <code>read_file</code> 显示「已修好」，<code>bash grep</code> 走真实磁盘显示「没修好」——每一次校验都和每一次写入互相矛盾</span>
+        </div>
+        <p>agent 在 17:59:19 自己得出了正确结论（「write_file 会静默翻译」），但仍无法让磁盘留下 <code>/mnt</code>。磁盘实测证实：39/39 页 OCR 与聚合后的 <code>ocr_records.md</code>（13 + 26 行）<strong>全部是 <code>/Users</code> 前缀，<code>/mnt</code> 计数为 0</strong>。</p>
+        <p><strong>值得注意的是</strong>，<code>parse_image_batch</code> 的 <code>_provenance_line()</code> 注释明确写着 “Virtual path only. Host absolute paths break on any other deployment.”——工具的意图是对的，是底层 sandbox 的内容翻译把它推翻了。</p>
+        <p><strong>修复方向</strong>：provenance 这类「内容即数据、不是可执行路径」的写入应绕过 <code>_resolve_paths_in_content</code>；或让反向解析不再限定 <code>_agent_written_paths</code>，使读写对称。当前的不对称意味着 agent 永远看不到磁盘真相，任何同类问题都会重演。</p>
+      </div>
+      <div class="card">
+        <div class="h"><span class="sev s2">S2 · 闸循环：单任务 28 次执行</span></div>
+        <p><code>check_track_structure.py</code> 全程 <strong>执行 51 次</strong>，其中 28 次集中在那个 901 秒的 EX 轨修订任务里，形成「改一条 → 跑全闸」的往返节奏（编辑 10 次、闸 28 次）。另有 <strong>20 次</strong>是用 <code>sed</code>/<code>grep</code> 读闸的<strong>源码</strong>去猜它想要什么，加 11 次 <code>read_file</code> 该脚本——这说明闸的报错没有把「要什么」说清楚，子代理只能反向工程。</p>
+        <p class="note">这两类必须分开统计：<code>analyze_eligibility_run.py</code> 报的 <code>gate_script_calls=56</code> 把执行和读源码混为一谈，掩盖了「规格不清」这个独立问题。</p>
+      </div>
+      <div class="card">
+        <div class="h"><span class="sev s3">S3 · 产物闸 2 次 failed，但重试有效</span></div>
+        <p>首轮双轨解析都因 <code>required outputs missing/empty</code> 被拦（缺 <code>criteria_parsed_IN.json</code> / <code>_EX.json</code>），重试<strong>全部成功</strong>。代价是 452 秒和 43 万 token 的返工，但闸的判断是对的，报错也列出了目标目录的实际文件名——这是相比历史会话的明确改善。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">第二个问题</span>
+      <h2>全部 11 处工具调用失败</h2>
+    </div>
+    <p class="note"><code>analyze_eligibility_run.py</code> 报 <code>tool_error_steps=4</code>，<strong>严重漏报</strong>——它只匹配 <code>Error:</code> 前缀且只扫一个通道。逐条核对 lead 的 145 个 tool result 与子代理的 260 个 tool step 后，真实数字是 11。</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>时间</th><th>调用方</th><th>工具</th><th>失败原因</th><th>归类</th></tr></thead>
+        <tbody>
+          <tr><td class="n">16:24:45</td><td>LEAD</td><td>bash</td><td class="wrap-cell">章节定位脚本未在 <code>试验方案.md</code> 找到「入选标准/排除标准」标题，exit 2</td><td>数据形态</td></tr>
+          <tr><td class="n">16:43:57</td><td>EX-retry1</td><td>str_replace</td><td class="wrap-cell"><code>old_str</code> 在 <code>criteria_parsed_EX.json</code> 中命中 3 处，拒绝猜测，未写入</td><td>工具误用</td></tr>
+          <tr><td class="n">16:43:57</td><td>EX-retry1</td><td>bash</td><td class="wrap-cell"><code>JSONDecodeError: Extra data: line 294</code>——读到写坏的多文档 JSON</td><td>产物损坏</td></tr>
+          <tr><td class="n">17:11:20</td><td>EX 修订</td><td>task_progress_summary</td><td class="wrap-cell">工具不存在（幻觉），harness 回列 14 个合法工具名</td><td>幻觉</td></tr>
+          <tr class="hot"><td class="n">17:15:56</td><td>LEAD</td><td>apply_json_patches</td><td class="wrap-cell">试图改 <code>/mnt/skills/…/criteria_qc_bundle.py</code> · 技能目录只读</td><td>权限</td></tr>
+          <tr><td class="n">17:29:09</td><td>EX-12</td><td>bash</td><td class="wrap-cell">内联 bash 写结构化 JSON 被 <code>bash_write_policy</code> 拦（须走 write_file / apply_json_patches）</td><td>策略守卫</td></tr>
+          <tr><td class="n">17:29:09</td><td>EX-12</td><td>apply_json_patches</td><td class="wrap-cell">批次第 9/16 个补丁的 JSON Pointer <code>/描述索引/EX-12-1</code> 键不存在，整批回滚</td><td>索引失配</td></tr>
+          <tr><td class="n">17:31:19</td><td>EX-12</td><td>bash</td><td class="wrap-cell"><code>check_track_structure.py</code> 缺 <code>--qc</code> 的值，argparse exit 2</td><td>参数错误</td></tr>
+          <tr><td class="n">17:32:43</td><td>LEAD</td><td>bash</td><td class="wrap-cell">同上，lead 复现了同一个缺参错误</td><td>参数错误</td></tr>
+          <tr class="hot"><td class="n">17:46:37</td><td>LEAD</td><td>apply_json_patches</td><td class="wrap-cell">再次试图改同一个只读技能脚本</td><td>权限</td></tr>
+          <tr><td class="n">17:47:24</td><td>LEAD</td><td>bash</td><td class="wrap-cell"><code>judge_pack.py</code> 猜在 <code>criteria-parser/scripts/</code>，实际在 <code>eligibility-judgment/scripts/</code></td><td>路径猜测</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3 style="margin-top:1rem">另有 4 次路径守卫误报（同一根因）</h3>
+    <p class="note">17:50–17:58 之间 4 次 <code>bash</code> 被 <code>Unsafe absolute paths in command</code> 拒绝，报出的「路径」是 <code>/Users/</code>、<code>/pid/</code>、<code>/source</code>、<code>/Users:</code>——它们全都出现在<strong>脚本正文</strong>里（grep 的检索串、Python 的正则字面量、字典键），不是命令要打开的文件。<code>validate_local_bash_command_paths</code> 在原始命令串上扫绝对路径，已经为 <code>sed</code>/<code>awk</code> 的正则体加了豁免（<code>_is_shell_regex_literal_fragment</code>），但覆盖不到 heredoc 内嵌的 Python 源码。这 4 次失败正好落在 provenance 死循环内部，把一个已经无法收敛的循环又拖长了。</p>
+    <ul>
+      <li><strong>2 次权限失败值得单独说</strong>：agent 定位到 <code>criteria_qc_bundle.py</code> 的 <code>clause_spans()</code> 有真实 bug（同一条号跨入排两段时取错 span），但技能目录只读，无法就地修。它只能绕道，bug 留在原处——这是一个被正确诊断却无法修复的问题。</li>
+      <li><strong>3 次参数/路径错误</strong>（缺 <code>--qc</code> 值 ×2、<code>judge_pack.py</code> 猜错目录）都属于「脚本用法未在技能文档中给到手边」，代价是各一轮完整的 LLM 往返。</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">如何结束</span>
+      <h2>用户主动中断，不是崩溃</h2>
+    </div>
+    <p class="note">18:16:25 收到 <code>cancel(action=interrupt)</code>，两个判定子代理被 <code>Requested cancellation</code> 逐个取消，run 于 18:17:25 落 <code>interrupted</code>。3 条 <code>run.error</code> 均为 <code>CancelledError</code>，是取消的正常传播。因此两个判定任务没有终态 <code>usage</code>，<code>subagent_tokens_from_tasks</code>（733 万）低于 run 行的 951 万——这个差额是中断造成的，不是漏账。</p>
+  </section>
+
+  <footer>
+    <span>数据源：Postgres <code>runs</code> / <code>run_events</code>（只读）+ <code>logs/gateway.log</code>；无重放、无模型调用。</span>
+    <span>子代理延迟无埋点，其耗时为 5 秒分辨率的轮询推算；判定阶段两任务的 token 因中断缺失。</span>
+  </footer>
+</div>

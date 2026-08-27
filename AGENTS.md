@@ -119,6 +119,9 @@ These apply repo-wide; module guides own the module-specific detail.
   the same change set.
 - **Test-driven development** — features and bug fixes ship with tests. Backend tests live
   in `backend/tests/` (TDD is mandatory there; see [backend/AGENTS.md](backend/AGENTS.md));
-  frontend tests live in `frontend/tests/`.
+  frontend tests live in `frontend/tests/`. The full backend suite takes ~60 min because it
+  includes real-LLM e2e tests - for day-to-day runs after a change, skip them
+  (`--ignore=tests/test_client_e2e.py --ignore=tests/test_client_live.py`, ~3 min); see
+  backend/AGENTS.md § "Test suite cost & day-to-day invocation".
 - **Format before pushing** — run `make format` (backend) / `pnpm check` (frontend). Backend
   CI enforces `ruff format --check`, so formatting must be clean before a push.
