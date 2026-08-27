@@ -74,3 +74,7 @@ skills/custom/**
 # agent 定义是 SOUL.md 的配套(name/tool_groups/skills 白名单),随 SOUL 一同入库;
 # 上方全局 `config.yaml` 会误伤,显式放行(白名单必须写在被覆盖规则之后):
 !.deer-flow/agents/*/config.yaml
+
+# ── 临时可视化/诊断工件(会话分析截图与架构图核验产物,不入库)──
+eligibility-screener-architecture*
+b1510d50-overview.png
