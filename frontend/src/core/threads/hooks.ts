@@ -33,6 +33,7 @@ import {
   type ThreadSearchParams,
 } from "./thread-search-query";
 import { threadTokenUsageQueryKey } from "./token-usage";
+import { reasoningEffortForMode } from "./types";
 import type {
   AgentThread,
   AgentThreadState,
@@ -1330,13 +1331,7 @@ export function useThreadStream({
               subagent_enabled: context.mode === "ultra",
               reasoning_effort:
                 context.reasoning_effort ??
-                (context.mode === "ultra"
-                  ? "high"
-                  : context.mode === "pro"
-                    ? "medium"
-                    : context.mode === "thinking"
-                      ? "low"
-                      : undefined),
+                reasoningEffortForMode(context.mode),
               thread_id: threadId,
             },
           },
@@ -1434,14 +1429,7 @@ export function useThreadStream({
             is_plan_mode: context.mode === "pro" || context.mode === "ultra",
             subagent_enabled: context.mode === "ultra",
             reasoning_effort:
-              context.reasoning_effort ??
-              (context.mode === "ultra"
-                ? "high"
-                : context.mode === "pro"
-                  ? "medium"
-                  : context.mode === "thinking"
-                    ? "low"
-                    : undefined),
+              context.reasoning_effort ?? reasoningEffortForMode(context.mode),
             thread_id: threadId,
           },
         });

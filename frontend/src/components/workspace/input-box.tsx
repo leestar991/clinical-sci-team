@@ -66,7 +66,13 @@ import { isHiddenFromUIMessage } from "@/core/messages/utils";
 import { useModels } from "@/core/models/hooks";
 import { useSkills } from "@/core/skills/hooks";
 import { useSuggestionsConfig } from "@/core/suggestions/hooks";
-import type { AgentThreadContext, GoalState } from "@/core/threads";
+import { reasoningEffortForMode } from "@/core/threads";
+import type {
+  AgentThreadContext,
+  GoalState,
+  InputMode,
+  ReasoningEffort,
+} from "@/core/threads";
 import { textOfMessage } from "@/core/threads/utils";
 import {
   formatUploadSize,
@@ -114,8 +120,6 @@ import { useThread } from "./messages/context";
 import { ModeHoverGuide } from "./mode-hover-guide";
 import { Tooltip } from "./tooltip";
 
-type InputMode = "flash" | "thinking" | "pro" | "ultra";
-
 function getResolvedMode(
   mode: InputMode | undefined,
   supportsThinking: boolean,
@@ -153,8 +157,8 @@ export function InputBox({
     AgentThreadContext,
     "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
   > & {
-    mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
-    reasoning_effort?: "minimal" | "low" | "medium" | "high";
+    mode: InputMode | undefined;
+    reasoning_effort?: ReasoningEffort;
   };
   extraHeader?: React.ReactNode;
   /**
@@ -170,8 +174,8 @@ export function InputBox({
       AgentThreadContext,
       "thread_id" | "is_plan_mode" | "thinking_enabled" | "subagent_enabled"
     > & {
-      mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
-      reasoning_effort?: "minimal" | "low" | "medium" | "high";
+      mode: InputMode | undefined;
+      reasoning_effort?: ReasoningEffort;
     },
   ) => void;
   onFollowupsVisibilityChange?: (visible: boolean) => void;
@@ -389,21 +393,14 @@ export function InputBox({
       onContextChange?.({
         ...context,
         mode: getResolvedMode(mode, supportThinking),
-        reasoning_effort:
-          mode === "ultra"
-            ? "high"
-            : mode === "pro"
-              ? "medium"
-              : mode === "thinking"
-                ? "low"
-                : "minimal",
+        reasoning_effort: reasoningEffortForMode(mode),
       });
     },
     [onContextChange, context, supportThinking],
   );
 
   const handleReasoningEffortSelect = useCallback(
-    (effort: "minimal" | "low" | "medium" | "high") => {
+    (effort: ReasoningEffort) => {
       onContextChange?.({
         ...context,
         reasoning_effort: effort,

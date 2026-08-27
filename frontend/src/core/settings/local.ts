@@ -1,5 +1,9 @@
 import type { TokenUsageInlineMode } from "../messages/usage-model";
-import type { AgentThreadContext } from "../threads";
+import type {
+  AgentThreadContext,
+  InputMode,
+  ReasoningEffort,
+} from "../threads";
 
 export const DEFAULT_LOCAL_SETTINGS: LocalSettings = {
   notification: {
@@ -41,8 +45,8 @@ export interface LocalSettings {
     | "reasoning_effort"
   > & {
     model_name?: string | undefined;
-    mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
-    reasoning_effort?: "minimal" | "low" | "medium" | "high";
+    mode: InputMode | undefined;
+    reasoning_effort?: ReasoningEffort;
   };
 }
 

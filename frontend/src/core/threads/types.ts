@@ -37,13 +37,40 @@ export interface AgentThreadState extends Record<string, unknown> {
   goal?: GoalState | null;
 }
 
+export type InputMode = "flash" | "thinking" | "pro" | "ultra";
+
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
+/**
+ * The reasoning depth each input mode implies.
+ *
+ * Kept here as the single source of truth because three call sites need it: the
+ * mode picker in `input-box.tsx` and both submit paths in `hooks.ts`. They used
+ * to inline the same ternary chain, which is how `flash` came to mean `minimal`
+ * in one place and `undefined` in the others — leaving a brand-new thread's
+ * first flash request with no effort at all, so the provider applied its own
+ * default (`high` on DeepSeek).
+ */
+export const MODE_REASONING_EFFORT: Record<InputMode, ReasoningEffort> = {
+  flash: "minimal",
+  thinking: "low",
+  pro: "medium",
+  ultra: "high",
+};
+
+export function reasoningEffortForMode(
+  mode: InputMode | undefined,
+): ReasoningEffort {
+  return MODE_REASONING_EFFORT[mode ?? "pro"];
+}
+
 export interface AgentThreadContext extends Record<string, unknown> {
   thread_id: string;
   model_name: string | undefined;
   thinking_enabled: boolean;
   is_plan_mode: boolean;
   subagent_enabled: boolean;
-  reasoning_effort?: "minimal" | "low" | "medium" | "high";
+  reasoning_effort?: ReasoningEffort;
   agent_name?: string;
 }
 
