@@ -89,9 +89,20 @@ class TokenBudgetMiddleware(AgentMiddleware[AgentState]):
 
     @staticmethod
     def _get_run_id(runtime: Runtime) -> str:
+        """The budget scope.
+
+        ``task_id`` first: every subagent task of one run shares the parent ``run_id``, so
+        keying on the run would give 14 tasks one shared allowance — the first heavy task
+        would eat it and every later task would start already over budget. The lead agent
+        has no ``task_id`` and keeps per-run scoping.
+        """
         ctx = getattr(runtime, "context", None)
-        if isinstance(ctx, dict) and "run_id" in ctx:
-            return ctx["run_id"]
+        if isinstance(ctx, dict):
+            task_id = ctx.get("task_id")
+            if task_id:
+                return f"task:{task_id}"
+            if "run_id" in ctx:
+                return ctx["run_id"]
         # Fallback to runtime object ID to prevent collisions across embedded client runs
         return str(id(runtime))
 

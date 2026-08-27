@@ -7,7 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import deerflow.models as models_module
 from deerflow.agents.lead_agent import agent as lead_agent_module
+from deerflow.agents.middlewares import summarization_middleware as summarization_module
 from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
 from deerflow.config.app_config import AppConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
@@ -444,8 +446,10 @@ def test_create_summarization_middleware_uses_configured_model_alias(monkeypatch
         raise AssertionError("ambient get_app_config() must not be used when app_config is explicit")
 
     monkeypatch.setattr(lead_agent_module, "get_app_config", _raise_get_app_config)
-    monkeypatch.setattr(lead_agent_module, "create_chat_model", _fake_create_chat_model)
-    monkeypatch.setattr(lead_agent_module, "DeerFlowSummarizationMiddleware", lambda **kwargs: kwargs)
+    # Construction lives in ``summarization_middleware.build_summarization_middleware``
+    # (shared with the subagent runtime), so patch the seams it actually uses.
+    monkeypatch.setattr(models_module, "create_chat_model", _fake_create_chat_model)
+    monkeypatch.setattr(summarization_module, "DeerFlowSummarizationMiddleware", lambda **kwargs: kwargs)
 
     middleware = lead_agent_module._create_summarization_middleware(app_config=app_config)
 
@@ -465,7 +469,7 @@ def test_create_summarization_middleware_uses_frontend_supported_update_key(monk
 
     fake_model = MagicMock()
     fake_model.with_config.return_value = fake_model
-    monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: fake_model)
+    monkeypatch.setattr(models_module, "create_chat_model", lambda **kwargs: fake_model)
 
     middleware = lead_agent_module._create_summarization_middleware(app_config=app_config)
 
@@ -490,8 +494,8 @@ def test_create_summarization_middleware_threads_resolved_app_config_to_model(mo
         return fake_model
 
     monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: fallback_app_config)
-    monkeypatch.setattr(lead_agent_module, "create_chat_model", _fake_create_chat_model)
-    monkeypatch.setattr(lead_agent_module, "DeerFlowSummarizationMiddleware", lambda **kwargs: kwargs)
+    monkeypatch.setattr(models_module, "create_chat_model", _fake_create_chat_model)
+    monkeypatch.setattr(summarization_module, "DeerFlowSummarizationMiddleware", lambda **kwargs: kwargs)
 
     lead_agent_module._create_summarization_middleware()
 

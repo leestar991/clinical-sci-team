@@ -1476,6 +1476,34 @@ class TestThreadSafety:
             assert result.status == SubagentStatus.COMPLETED
             assert "Result" in result.result
 
+    def test_stop_reason_is_recorded_and_not_overwritten(self, executor_module):
+        """`stop_reason` 告诉 lead「这不是坏了，是没额度了」，必须与 status 一样只写一次。
+
+        没有它，`task_tool` 只能看到一个普通 FAILED，于是把 6.36M 的失败原样重跑一遍
+        （会话 `d393714d`：重试又花 5.21M，两次撞同一个 recursion_limit）。
+        """
+        SubagentResult = executor_module.SubagentResult
+        SubagentStatus = executor_module.SubagentStatus
+
+        result = SubagentResult(task_id="t1", trace_id="tr1", status=SubagentStatus.RUNNING)
+        assert result.stop_reason is None
+
+        assert result.try_set_terminal(SubagentStatus.FAILED, error="boom", stop_reason="recursion_limit") is True
+        assert result.stop_reason == "recursion_limit"
+
+        # 迟到的终态写入不得改写既有原因（与 status/payload 的 once-only 语义一致）
+        assert result.try_set_terminal(SubagentStatus.COMPLETED, result="late", stop_reason="token_budget") is False
+        assert result.stop_reason == "recursion_limit"
+        assert result.status == SubagentStatus.FAILED
+
+    def test_ordinary_failure_leaves_stop_reason_unset(self, executor_module):
+        SubagentResult = executor_module.SubagentResult
+        SubagentStatus = executor_module.SubagentStatus
+
+        result = SubagentResult(task_id="t1", trace_id="tr1", status=SubagentStatus.RUNNING)
+        result.try_set_terminal(SubagentStatus.FAILED, error="bad json")
+        assert result.stop_reason is None, "普通失败必须保持可重试"
+
     def test_terminal_status_is_published_after_payload_fields(self, executor_module, monkeypatch):
         """Readers must not observe terminal status before terminal payload is complete."""
         SubagentResult = executor_module.SubagentResult
@@ -2358,6 +2386,7 @@ class TestSubagentGuardrailAttribution:
         oauth_provider=None,
         oauth_id=None,
         run_id=None,
+        run_journal=None,
         name="general-purpose",
         parent_model="test-model",
     ):
@@ -2381,6 +2410,7 @@ class TestSubagentGuardrailAttribution:
             oauth_provider=oauth_provider,
             oauth_id=oauth_id,
             run_id=run_id,
+            run_journal=run_journal,
         )
 
     @pytest.mark.anyio
@@ -2416,6 +2446,102 @@ class TestSubagentGuardrailAttribution:
         assert context.get("oauth_id") == "subj-123"
         assert context.get("run_id") == "run-42"
         assert context.get("is_subagent") is True
+
+    @pytest.mark.anyio
+    async def test_aexecute_puts_task_id_in_subagent_context(
+        self,
+        classes,
+        executor_module,
+        monkeypatch,
+    ):
+        """``task_id`` must reach the subagent's runtime context.
+
+        It is the only isolation boundary available to per-run middleware caches:
+        every task of one run shares thread_id + run_id + sandbox_id, so without it
+        ``ReadFileDedupMiddleware`` would tell task B "you already read this file"
+        about a read that happened in task A — whose content B cannot see.
+        """
+        executor = self._make_executor(classes, run_id="run-42")
+        fake_agent = _FakeStreamAgent()
+        monkeypatch.setattr(executor, "_build_initial_state", self._noop_build_initial_state)
+        monkeypatch.setattr(executor, "_create_agent", lambda *a, **kw: fake_agent)
+
+        result = await executor._aexecute("do something")
+
+        context = fake_agent.captured_context
+        assert context is not None
+        assert context.get("task_id") == result.task_id
+        assert context["task_id"], "task_id must be non-empty"
+
+    @pytest.mark.anyio
+    async def test_aexecute_task_id_matches_provided_result_holder(
+        self,
+        classes,
+        executor_module,
+        monkeypatch,
+    ):
+        """The streaming path passes a pre-created holder; its id must be the one used."""
+        executor = self._make_executor(classes, run_id="run-42")
+        fake_agent = _FakeStreamAgent()
+        monkeypatch.setattr(executor, "_build_initial_state", self._noop_build_initial_state)
+        monkeypatch.setattr(executor, "_create_agent", lambda *a, **kw: fake_agent)
+
+        holder = classes["SubagentResult"](
+            task_id="held-task-1",
+            trace_id="trace-attrib-1",
+            status=classes["SubagentStatus"].RUNNING,
+        )
+        await executor._aexecute("do something", holder)
+
+        assert fake_agent.captured_context.get("task_id") == "held-task-1"
+
+    @pytest.mark.anyio
+    async def test_aexecute_propagates_run_journal_to_subagent_context(
+        self,
+        classes,
+        executor_module,
+        monkeypatch,
+    ):
+        """``__run_journal`` must reach the subagent runtime context.
+
+        Only ``runtime/runs/worker.py`` injects the run-scoped ``RunJournal``, and it
+        injects it into the *lead* context, so middleware audit events raised inside a
+        subagent were silently dropped: any ``journal.record_middleware(...)`` call there
+        found no journal and returned. That is half of why the ``middleware:summarize``
+        acceptance metric read 0 for session ``c2518bc7`` — the subagent-level
+        compaction had no way to report itself.
+        """
+        journal = object()
+        executor = self._make_executor(classes, run_id="run-42", run_journal=journal)
+        fake_agent = _FakeStreamAgent()
+        monkeypatch.setattr(executor, "_build_initial_state", self._noop_build_initial_state)
+        monkeypatch.setattr(executor, "_create_agent", lambda *a, **kw: fake_agent)
+
+        await executor._aexecute("do something")
+
+        assert fake_agent.captured_context.get("__run_journal") is journal
+
+    @pytest.mark.anyio
+    async def test_aexecute_omits_run_journal_key_when_absent(
+        self,
+        classes,
+        executor_module,
+        monkeypatch,
+    ):
+        """Embedded / internal-auth runs have no journal; the key must simply not appear.
+
+        Writing ``None`` would be indistinguishable from a real journal to a
+        ``"__run_journal" in context`` check and would change behaviour for every
+        deployment that never had one.
+        """
+        executor = self._make_executor(classes, run_id="run-42")
+        fake_agent = _FakeStreamAgent()
+        monkeypatch.setattr(executor, "_build_initial_state", self._noop_build_initial_state)
+        monkeypatch.setattr(executor, "_create_agent", lambda *a, **kw: fake_agent)
+
+        await executor._aexecute("do something")
+
+        assert "__run_journal" not in fake_agent.captured_context
 
     @pytest.mark.anyio
     async def test_aexecute_context_defaults_to_none_when_attribution_absent(

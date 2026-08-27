@@ -33,7 +33,7 @@ from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionM
 from deerflow.agents.middlewares.memory_middleware import MemoryMiddleware
 from deerflow.agents.middlewares.safety_finish_reason_middleware import SafetyFinishReasonMiddleware
 from deerflow.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
-from deerflow.agents.middlewares.summarization_middleware import BeforeSummarizationHook, DeerFlowSummarizationMiddleware
+from deerflow.agents.middlewares.summarization_middleware import BeforeSummarizationHook, DeerFlowSummarizationMiddleware, build_summarization_middleware
 from deerflow.agents.middlewares.title_middleware import TitleMiddleware
 from deerflow.agents.middlewares.todo_middleware import TodoMiddleware
 from deerflow.agents.middlewares.token_usage_middleware import TokenUsageMiddleware
@@ -77,57 +77,21 @@ def _resolve_model_name(requested_model_name: str | None = None, *, app_config: 
 
 
 def _create_summarization_middleware(*, app_config: AppConfig | None = None) -> DeerFlowSummarizationMiddleware | None:
-    """Create and configure the summarization middleware from config."""
+    """Create and configure the lead agent's summarization middleware from config.
+
+    Construction is shared with the subagent runtime via
+    ``build_summarization_middleware`` so the two cannot drift; only the config section
+    and the memory-flush hook are lead-specific.
+    """
     resolved_app_config = app_config or get_app_config()
-    config = resolved_app_config.summarization
-
-    if not config.enabled:
-        return None
-
-    # Prepare trigger parameter
-    trigger = None
-    if config.trigger is not None:
-        if isinstance(config.trigger, list):
-            trigger = [t.to_tuple() for t in config.trigger]
-        else:
-            trigger = config.trigger.to_tuple()
-
-    # Prepare keep parameter
-    keep = config.keep.to_tuple()
-
-    # Prepare model parameter.
-    # Bind "middleware:summarize" tag so RunJournal identifies these LLM calls
-    # as middleware rather than lead_agent (SummarizationMiddleware is a
-    # LangChain built-in, so we tag the model at creation time).
-    # attach_tracing=False because the graph-level RunnableConfig (set in
-    # ``_make_lead_agent``) already carries tracing callbacks; binding them
-    # again at the model level would emit duplicate spans and break
-    # ``session_id`` / ``user_id`` propagation.
-    if config.model_name:
-        model = create_chat_model(name=config.model_name, thinking_enabled=False, app_config=resolved_app_config, attach_tracing=False)
-    else:
-        model = create_chat_model(thinking_enabled=False, app_config=resolved_app_config, attach_tracing=False)
-    model = model.with_config(tags=["middleware:summarize"])
-
-    # Prepare kwargs
-    kwargs = {
-        "model": model,
-        "trigger": trigger,
-        "keep": keep,
-    }
-
-    if config.trim_tokens_to_summarize is not None:
-        kwargs["trim_tokens_to_summarize"] = config.trim_tokens_to_summarize
-
-    if config.summary_prompt is not None:
-        kwargs["summary_prompt"] = config.summary_prompt
 
     hooks: list[BeforeSummarizationHook] = []
     if resolved_app_config.memory.enabled:
         hooks.append(memory_flush_hook)
 
-    return DeerFlowSummarizationMiddleware(
-        **kwargs,
+    return build_summarization_middleware(
+        resolved_app_config.summarization,
+        app_config=resolved_app_config,
         before_summarization=hooks,
     )
 
@@ -508,7 +472,7 @@ def _make_lead_agent(config: RunnableConfig, *, app_config: AppConfig):
         filtered = filter_tools_by_skill_allowed_tools(raw_tools, skills_for_tool_policy)
         final_tools, setup = assemble_deferred_tools(filtered, enabled=resolved_app_config.tool_search.enabled)
         return create_agent(
-            model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False),
+            model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort, app_config=resolved_app_config, attach_tracing=False),
             tools=final_tools,
             middleware=build_middlewares(
                 config,

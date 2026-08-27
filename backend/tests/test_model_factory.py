@@ -1072,6 +1072,210 @@ def test_no_duplicate_kwarg_when_reasoning_effort_in_config_and_thinking_disable
 
 
 # ---------------------------------------------------------------------------
+# reasoning_effort: runtime kwarg vs. thinking-disabled injection
+# ---------------------------------------------------------------------------
+
+
+def _capture_effort(monkeypatch, cfg, name: str, **create_kwargs) -> dict:
+    """Build a model and return the kwargs its constructor actually received."""
+    captured: dict = {}
+
+    class CapturingModel(FakeChatModel):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            BaseChatModel.__init__(self, **kwargs)
+
+    _patch_factory(monkeypatch, cfg, model_class=CapturingModel)
+    factory_module.create_chat_model(name=name, **create_kwargs)
+    return captured
+
+
+@pytest.mark.parametrize("runtime_effort", ["low", None])
+def test_no_duplicate_kwarg_when_runtime_effort_and_thinking_disabled(monkeypatch, runtime_effort):
+    """A runtime ``reasoning_effort`` kwarg must not collide with the ``minimal``
+    that the thinking-disabled branch injects into the config settings.
+
+    This is the production path: ``make_lead_agent`` always forwards
+    ``reasoning_effort=<value or None>``, so a model that declares
+    ``when_thinking_enabled`` but no ``when_thinking_disabled`` used to raise
+    ``TypeError: got multiple values for keyword argument 'reasoning_effort'``
+    on every flash-mode request. ``None`` collides just as hard as a real value.
+    """
+    cfg = _make_app_config(
+        [
+            _make_model(
+                "gw-model",
+                supports_thinking=True,
+                supports_reasoning_effort=True,
+                when_thinking_enabled={"extra_body": {"thinking": {"type": "enabled"}}},
+            )
+        ]
+    )
+
+    captured = _capture_effort(monkeypatch, cfg, "gw-model", thinking_enabled=False, reasoning_effort=runtime_effort)
+
+    # An explicit runtime value wins; ``None`` must not erase the injected default.
+    assert captured.get("reasoning_effort") == (runtime_effort or "minimal")
+
+
+def test_runtime_effort_overrides_config_effort(monkeypatch):
+    """The per-request depth from the frontend takes precedence over config.yaml."""
+    model = ModelConfig(
+        name="cfg-effort",
+        display_name="cfg-effort",
+        description=None,
+        use="langchain_openai:ChatOpenAI",
+        model="cfg-effort",
+        reasoning_effort="low",  # extra field from config.yaml
+        supports_thinking=True,
+        supports_reasoning_effort=True,
+        supports_vision=False,
+    )
+    captured = _capture_effort(
+        monkeypatch,
+        _make_app_config([model]),
+        "cfg-effort",
+        thinking_enabled=True,
+        reasoning_effort="high",
+    )
+
+    assert captured.get("reasoning_effort") == "high"
+
+
+def test_runtime_effort_none_preserves_config_effort(monkeypatch):
+    """``reasoning_effort=None`` means "unspecified", not "clear the configured value"."""
+    model = ModelConfig(
+        name="cfg-effort",
+        display_name="cfg-effort",
+        description=None,
+        use="langchain_openai:ChatOpenAI",
+        model="cfg-effort",
+        reasoning_effort="low",
+        supports_thinking=True,
+        supports_reasoning_effort=True,
+        supports_vision=False,
+    )
+    captured = _capture_effort(
+        monkeypatch,
+        _make_app_config([model]),
+        "cfg-effort",
+        thinking_enabled=True,
+        reasoning_effort=None,
+    )
+
+    assert captured.get("reasoning_effort") == "low"
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek effort remap
+# ---------------------------------------------------------------------------
+
+
+def _make_deepseek_model(name: str = "ds", *, base_url: str = "https://api.deepseek.com/v1") -> ModelConfig:
+    return ModelConfig(
+        name=name,
+        display_name=name,
+        description=None,
+        use="deerflow.models.patched_deepseek:PatchedChatDeepSeek",
+        model="deepseek-v4-pro",
+        base_url=base_url,
+        supports_thinking=True,
+        supports_reasoning_effort=True,
+        when_thinking_enabled={"extra_body": {"thinking": {"type": "enabled"}}},
+        when_thinking_disabled={"extra_body": {"thinking": {"type": "disabled"}}},
+        supports_vision=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("ui_effort", "expected"),
+    [
+        ("minimal", "minimal"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "max"),
+    ],
+)
+def test_deepseek_effort_remap_spreads_ui_levels(monkeypatch, ui_effort, expected):
+    """DeepSeek folds medium/high/xhigh into one internal budget, so the four UI
+    levels are remapped onto four values it actually differentiates."""
+    captured = _capture_effort(
+        monkeypatch,
+        _make_app_config([_make_deepseek_model()]),
+        "ds",
+        thinking_enabled=True,
+        reasoning_effort=ui_effort,
+    )
+
+    assert captured.get("reasoning_effort") == expected
+
+
+def test_deepseek_remap_skipped_for_compatible_gateway(monkeypatch):
+    """Doubao/Kimi/Novita reuse PatchedChatDeepSeek but do not accept ``max``,
+    so the remap must key on the endpoint host, not the provider class."""
+    captured = _capture_effort(
+        monkeypatch,
+        _make_app_config([_make_deepseek_model(base_url="https://ark.cn-beijing.volces.com/api/v3")]),
+        "ds",
+        thinking_enabled=True,
+        reasoning_effort="high",
+    )
+
+    assert captured.get("reasoning_effort") == "high"
+
+
+def test_deepseek_remap_leaves_unknown_effort_untouched(monkeypatch):
+    """A value outside the UI vocabulary (e.g. DeepSeek's own ``max``) passes through."""
+    captured = _capture_effort(
+        monkeypatch,
+        _make_app_config([_make_deepseek_model()]),
+        "ds",
+        thinking_enabled=True,
+        reasoning_effort="max",
+    )
+
+    assert captured.get("reasoning_effort") == "max"
+
+
+def test_deepseek_remap_applies_to_thinking_disabled_injection(monkeypatch):
+    """The injected ``minimal`` is a legal DeepSeek value and survives the remap."""
+    model = _make_deepseek_model()
+    model.when_thinking_disabled = None  # force the hardcoded disable path
+    captured = _capture_effort(
+        monkeypatch,
+        _make_app_config([model]),
+        "ds",
+        thinking_enabled=False,
+        reasoning_effort=None,
+    )
+
+    assert captured.get("reasoning_effort") == "minimal"
+    assert captured.get("extra_body") == {"thinking": {"type": "disabled"}}
+
+
+def test_codex_provider_rejects_minimal_effort(monkeypatch):
+    """``minimal`` is not in the Codex vocabulary, so it falls back to the default
+    instead of being forwarded verbatim."""
+    cfg = _make_app_config(
+        [
+            _make_model(
+                "codex",
+                use="deerflow.models.openai_codex_provider:CodexChatModel",
+                supports_thinking=True,
+                supports_reasoning_effort=True,
+            )
+        ]
+    )
+    _patch_factory(monkeypatch, cfg, model_class=FakeCodexChatModel)
+    monkeypatch.setattr(codex_provider_module, "CodexChatModel", FakeCodexChatModel)
+
+    FakeChatModel.captured_kwargs = {}
+    factory_module.create_chat_model(name="codex", thinking_enabled=True, reasoning_effort="minimal")
+
+    assert FakeChatModel.captured_kwargs.get("reasoning_effort") == "medium"
+
+
+# ---------------------------------------------------------------------------
 # stream_chunk_timeout default injection (issue #3189)
 # ---------------------------------------------------------------------------
 

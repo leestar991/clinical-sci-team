@@ -718,8 +718,19 @@ class TestLocalSandboxProviderMounts:
         content = sandbox.read_file("/mnt/data/info.txt")
         assert "/mnt/data/info.txt" in content
 
-    def test_read_file_does_not_reverse_resolve_non_agent_files(self, tmp_path):
-        """read_file should NOT rewrite paths in user-uploaded or external files."""
+    def test_read_file_reverse_resolves_files_written_by_other_tools(self, tmp_path):
+        """Reverse resolution is by location, not authorship (session ``a7c19ea1``).
+
+        This test previously asserted the opposite — that a file the sandbox did not write
+        through ``write_file`` keeps its host paths on read (``_agent_written_paths``,
+        PR #1935). That asymmetry is what made the OCR-provenance loop unwinnable: the
+        pages were written by a tool, so ``read_file`` showed host paths while
+        ``write_file`` translated ``/mnt`` -> host going in, and the agent's two ways of
+        checking the same file always disagreed. 17 lead turns, 1.59M tokens, no progress.
+
+        Uploads keep the exemption PR #1935 was actually protecting — see
+        ``test_local_sandbox_content_path_symmetry.py``, which covers that directly.
+        """
         data_dir = tmp_path / "data"
         data_dir.mkdir()
 
@@ -729,13 +740,13 @@ class TestLocalSandboxProviderMounts:
                 PathMapping(container_path="/mnt/data", local_path=str(data_dir)),
             ],
         )
-        # Write directly to filesystem (simulates user upload or external tool output)
+        # Write directly to the filesystem (simulates an external tool's output)
         local_path = str(data_dir).replace("\\", "/")
         (data_dir / "config.yml").write_text(f"output_dir: {local_path}/outputs")
 
         content = sandbox.read_file("/mnt/data/config.yml")
-        # Content should be returned as-is, NOT reverse-resolved
-        assert local_path in content
+        assert "/mnt/data/outputs" in content
+        assert local_path not in content
 
     def test_write_then_read_roundtrip(self, tmp_path):
         """Container paths survive a write → read roundtrip."""

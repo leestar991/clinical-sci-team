@@ -202,9 +202,24 @@ def test_validate_local_tool_path_prioritizes_user_data_before_custom_mounts() -
 
 
 def test_validate_local_tool_path_rejects_bare_virtual_root() -> None:
-    """The bare /mnt/user-data root without trailing slash is not a valid sub-path."""
-    with pytest.raises(PermissionError, match="Only paths under"):
+    """The bare /mnt/user-data root without trailing slash is not a valid sub-path.
+
+    Still rejected — that is the security invariant. The message changed in Task 15 (gate-loop
+    optimization): "Only paths under /mnt/user-data/ ..." was self-contradictory for a request
+    that *was* /mnt/user-data, so it now names the three real roots instead.
+    """
+    with pytest.raises(PermissionError) as excinfo:
         validate_local_tool_path(VIRTUAL_PATH_PREFIX, _THREAD_DATA)
+    message = str(excinfo.value)
+    assert f"{VIRTUAL_PATH_PREFIX}/workspace" in message
+    assert f"{VIRTUAL_PATH_PREFIX}/uploads" in message
+    assert f"{VIRTUAL_PATH_PREFIX}/outputs" in message
+
+
+def test_validate_local_tool_path_rejects_bare_virtual_root_with_trailing_slash() -> None:
+    """The trailing-slash form used to pass here and fail later as "path traversal detected"."""
+    with pytest.raises(PermissionError, match="union"):
+        validate_local_tool_path(f"{VIRTUAL_PATH_PREFIX}/", _THREAD_DATA)
 
 
 def test_validate_local_tool_path_allows_user_data_paths() -> None:
@@ -602,6 +617,58 @@ def test_validate_local_tool_path_blocks_skills_write() -> None:
                 _THREAD_DATA,
                 read_only=False,
             )
+
+
+def test_custom_skill_write_rejection_points_at_skill_manage() -> None:
+    """The refusal must name the tool that CAN do it (session ``a7c19ea1``).
+
+    The agent found a real bug in a custom skill's helper script, tried twice to patch it
+    with ``apply_json_patches``, got a bare "Permission denied" both times, and reported the
+    fix as blocked — while ``skill_manage(action="write_file")`` accepts exactly that path.
+    A refusal that hides the available route costs a full turn per attempt and then loses
+    the work entirely.
+    """
+    with patch("deerflow.sandbox.tools._get_skills_container_path", return_value="/mnt/skills"):
+        with pytest.raises(PermissionError) as excinfo:
+            validate_local_tool_path(
+                "/mnt/skills/custom/criteria-parser/scripts/criteria_qc_bundle.py",
+                _THREAD_DATA,
+                read_only=False,
+            )
+
+    message = str(excinfo.value)
+    assert "skill_manage" in message
+    assert 'name="criteria-parser"' in message
+    assert 'path="scripts/criteria_qc_bundle.py"' in message
+
+
+def test_public_skill_write_rejection_does_not_suggest_skill_manage() -> None:
+    """Built-in skills are genuinely read-only; pointing at skill_manage would misdirect."""
+    with patch("deerflow.sandbox.tools._get_skills_container_path", return_value="/mnt/skills"):
+        with pytest.raises(PermissionError) as excinfo:
+            validate_local_tool_path("/mnt/skills/public/bootstrap/SKILL.md", _THREAD_DATA, read_only=False)
+
+    message = str(excinfo.value)
+    assert "skill_manage" not in message
+    assert "read-only" in message
+
+
+def test_custom_skill_root_write_rejection_stays_generic() -> None:
+    """No file named, nothing specific to suggest — must not emit a malformed pointer."""
+    with patch("deerflow.sandbox.tools._get_skills_container_path", return_value="/mnt/skills"):
+        with pytest.raises(PermissionError) as excinfo:
+            validate_local_tool_path("/mnt/skills/custom", _THREAD_DATA, read_only=False)
+
+    assert 'name=""' not in str(excinfo.value)
+
+
+def test_custom_skill_bare_name_defaults_to_skill_md() -> None:
+    """A write aimed at the skill directory itself is a SKILL.md edit in practice."""
+    with patch("deerflow.sandbox.tools._get_skills_container_path", return_value="/mnt/skills"):
+        with pytest.raises(PermissionError) as excinfo:
+            validate_local_tool_path("/mnt/skills/custom/criteria-parser", _THREAD_DATA, read_only=False)
+
+    assert 'path="SKILL.md"' in str(excinfo.value)
 
 
 def test_validate_local_bash_command_paths_allows_skills_path() -> None:

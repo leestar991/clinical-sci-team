@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from deerflow.config.acp_config import ACPAgentConfig, load_acp_config_from_dict
 from deerflow.config.agents_api_config import AgentsApiConfig, load_agents_api_config_from_dict
 from deerflow.config.auth_config import AuthAppConfig
+from deerflow.config.bash_write_policy_config import BashWritePolicyConfig
 from deerflow.config.channel_connections_config import ChannelConnectionsConfig
 from deerflow.config.checkpointer_config import CheckpointerConfig, load_checkpointer_config_from_dict
 from deerflow.config.database_config import DatabaseConfig
@@ -22,6 +23,8 @@ from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.read_before_write_config import ReadBeforeWriteConfig
+from deerflow.config.read_dedup_config import ReadFileDedupConfig, SearchDedupConfig
+from deerflow.config.read_file_policy_config import ReadFilePolicyConfig
 from deerflow.config.reload_boundary import format_field_description
 from deerflow.config.run_events_config import RunEventsConfig
 from deerflow.config.runtime_paths import existing_project_file
@@ -174,6 +177,14 @@ class AppConfig(BaseModel):
     )
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig, description="Loop detection middleware configuration")
     read_before_write: ReadBeforeWriteConfig = Field(default_factory=ReadBeforeWriteConfig, description="Read-before-write file gate middleware configuration")
+    # Declared explicitly rather than relying on AppConfig's extra="allow": the previous
+    # read_file_dedup placeholder lived only in a gitignored config.yaml and was silently
+    # accepted while no runtime code existed, so a changelog claimed a feature that was
+    # never there. A declared field makes the gap visible.
+    read_file_dedup: ReadFileDedupConfig = Field(default_factory=ReadFileDedupConfig, description="Version-aware read_file deduplication middleware configuration")
+    read_file_policy: ReadFilePolicyConfig = Field(default_factory=ReadFilePolicyConfig, description="Whole-file re-read policy for read_file (bounds repeated whole reads of large files within one task)")
+    bash_write_policy: BashWritePolicyConfig = Field(default_factory=BashWritePolicyConfig, description="Inline-bash artifact-write policy (structured artifacts may only be written by write_file / apply_json_patches)")
+    search_dedup: SearchDedupConfig = Field(default_factory=SearchDedupConfig, description="Search-result deduplication configuration (not implemented yet)")
     safety_finish_reason: SafetyFinishReasonConfig = Field(default_factory=SafetyFinishReasonConfig, description="Provider safety-filter finish_reason interception middleware configuration")
     auth: AuthAppConfig = Field(default_factory=AuthAppConfig, description="Authentication configuration (local + OIDC SSO)")
     model_config = ConfigDict(extra="allow")

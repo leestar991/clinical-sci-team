@@ -4,24 +4,74 @@
 
 `create_deerflow_agent` 通过 `RuntimeFeatures` 组装的完整 middleware 链（默认全开时）：
 
+> **权威顺序在 [`backend/AGENTS.md`](../AGENTS.md) 的 Middleware Chain 一节**（共 29 项，含每一项的
+> 触发条件与设计理由）。下表只补充「各钩子由谁实现 + 主/子 agent 归属」这一层信息，编号与该节对齐。
+
 | # | Middleware | `before_agent` | `before_model` | `after_model` | `after_agent` | `wrap_model_call` | `wrap_tool_call` | 主 Agent | Subagent | 来源 |
 |---|-----------|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|------|
-| 0 | ThreadDataMiddleware | ✓ | | | | | | ✓ | ✓ | `sandbox` |
-| 1 | UploadsMiddleware | ✓ | | | | | | ✓ | ✗ | `sandbox` |
-| 2 | SandboxMiddleware | ✓ | | | ✓ | | | ✓ | ✓ | `sandbox` |
-| 3 | DanglingToolCallMiddleware | | | | | ✓ | | ✓ | ✗ | 始终开启 |
-| 4 | GuardrailMiddleware | | | | | | ✓ | ✓ | ✓ | *Phase 2 纳入* |
-| 5 | ToolErrorHandlingMiddleware | | | | | | ✓ | ✓ | ✓ | 始终开启 |
-| 6 | SummarizationMiddleware | | ✓ | | | | | ✓ | ✗ | `summarization` |
-| 7 | TodoMiddleware | | ✓ | ✓ | | ✓ | | ✓ | ✗ | `plan_mode` 参数 |
-| 8 | TitleMiddleware | | | ✓ | | | | ✓ | ✗ | `auto_title` |
-| 9 | MemoryMiddleware | | | | ✓ | | | ✓ | ✗ | `memory` |
-| 10 | ViewImageMiddleware | | ✓ | | | | | ✓ | ✗ | `vision` |
-| 11 | SubagentLimitMiddleware | | | ✓ | | | | ✓ | ✗ | `subagent` |
-| 12 | LoopDetectionMiddleware | ✓ | | ✓ | ✓ | ✓ | | ✓ | ✗ | 始终开启 |
-| 13 | ClarificationMiddleware | | | | | | ✓ | ✓ | ✗ | 始终最后 |
+| 1 | InputSanitizationMiddleware | | | | | ✓ | | ✓ | ✓ | 始终开启 |
+| 2 | ToolOutputBudgetMiddleware | | | | | | ✓ | ✓ | ✓ | `tool_output` |
+| 3 | ThreadDataMiddleware | ✓ | | | | | | ✓ | ✓ | `sandbox` |
+| 4 | UploadsMiddleware | ✓ | | | | | | ✓ | ✗ | `sandbox` |
+| 5 | SandboxMiddleware | ✓ | | | ✓ | | | ✓ | ✓ | `sandbox` |
+| 6 | DanglingToolCallMiddleware | | | | | ✓ | | ✓ | ✓ | 始终开启 |
+| 7 | LLMErrorHandlingMiddleware | | | | | ✓ | | ✓ | ✓ | 始终开启 |
+| 8 | GuardrailMiddleware | | | | | | ✓ | ✓ | ✓ | `guardrails` |
+| 9 | SandboxAuditMiddleware | | | | | | ✓ | ✓ | ✓ | 始终开启 |
+| 10 | ReadBeforeWriteMiddleware | | | | | | ✓ | ✓ | ✓ | `read_before_write` |
+| 10a | ReadFilePolicyMiddleware | | | | | | ✓ | ✓ | ✓ | `read_file_policy` |
+| 10b | BashWritePolicyMiddleware | | | | | | ✓ | ✓ | ✓ | `bash_write_policy` |
+| 11 | ReadFileDedupMiddleware | | | | | | ✓ | ✓ | ✓ | `read_file_dedup` |
+| 12 | ToolErrorHandlingMiddleware | | | | | | ✓ | ✓ | ✓ | 始终开启 |
+| 16 | SummarizationMiddleware | | ✓ | | | ✓ | | ✓ | ⚙ | `summarization` |
+| 17 | TodoMiddleware | | ✓ | ✓ | | ✓ | | ✓ | ✗ | `plan_mode` 参数 |
+| 19 | TitleMiddleware | | | ✓ | | | | ✓ | ✗ | `auto_title` |
+| 20 | MemoryMiddleware | | | | ✓ | | | ✓ | ✗ | `memory` |
+| 21 | ViewImageMiddleware | | ✓ | | | | | ✓ | ⚙ | `vision` |
+| 22 | DeferredToolFilterMiddleware | | ✓ | | | | | ✓ | ⚙ | `tool_search` |
+| 24 | SubagentLimitMiddleware | | | ✓ | | | | ✓ | ✗ | `subagent` |
+| 25 | LoopDetectionMiddleware | ✓ | | ✓ | ✓ | ✓ | | ✓ | ⚙ | 始终开启 |
+| 26 | TokenBudgetMiddleware | | ✓ | | | | | ✓ | ⚙ | `token_budget` |
+| 29 | ClarificationMiddleware | | | | | | ✓ | ✓ | ✗ | 始终最后 |
 
-主 agent **14 个** middleware（`make_lead_agent`），subagent **4 个**（ThreadData、Sandbox、Guardrail、ToolErrorHandling）。`create_deerflow_agent` Phase 1 实现 **13 个**（Guardrail 仅支持自定义实例，无内置默认）。
+**Subagent 列的 ⚙**：子代理**按 `subagents.*` 配置**接入，且**默认关闭**。子代理运行时长期只有共享基座
+（第 1–12 项）而没有 Summarization / LoopDetection / TokenBudget —— 一个判定 task 因此在 83 步内跑到
+6.36M token，没有任何一方压缩它的上下文、限它的预算、或打断它的门禁脚本循环（治理见
+`docs/eligibility-screener-gate-loop-optimization-changelog.md` Phase 1）。开启顺序有纪律：
+`token_budget → loop_detection → summarization → read_file_dedup`，**一次只开一个**。
+
+**10a / 10b 的顺序不是随意的**：两条策略排在 `ReadFileDedupMiddleware` **之前**，因为被拦下的调用
+不该到达 sandbox，dedup 的账本也只应记录真实发生过的读。三者都只实现 `wrap_tool_call`，
+**不新增图节点**，所以 `recursion_limit / 真实回合` 倍率（实测 4.03–4.05，见 `config.yaml`
+的 `max_turns` 口径注释）不受影响 —— 这一点由
+`tests/test_read_file_policy_middleware.py::TestNoGraphNode` 与
+`tests/test_bash_write_policy_middleware.py::TestNoGraphNode` 钉住。
+
+**Summarization 的 `wrap_model_call`（2026-08-12 新增）**：压缩把摘要写进
+`state["summary_text"]` 而不是插回 messages，而该通道的渲染者 `DurableContextMiddleware`
+**只挂在主 agent**。于是子代理的压缩长期是**净删除** —— 消息删掉、摘要写进没人读的通道。
+现在 `wrap_model_call` 在 `is_subagent` 时把摘要作为隐藏 `<task_progress_summary>` 块注入
+当次模型调用（配置 `subagents.summarization.inject_summary_message`，默认开）。
+故障与验证见 `docs/eligibility-screener-subagent-context-and-artifact-gate-changelog.md`。
+
+**压缩是一次交换，右手为空就不能做（2026-08-13）**：`_maybe_summarize` 的返回值会删掉所有
+未保留的消息并把 `summary_text` 放到它们的位置。`_summarize_with` 返回
+`response.text.strip()`，摘要模型只回空白时得到 `""` —— 假值但**不是 `None`**，而旧守卫只挡
+`None`，交换于是照做：消息删了、`summary_text` 被覆写成空、子代理注入端因通道为空而跳过。
+同一类净删除，另一条路径。现由 `_summary_is_usable` 阻断（无开关：空摘要换走历史是数据丢失，
+不是可选行为）。⚠️ `config.yaml` 里的 `min_summary_chars` 等 7 个键**没有对应字段**，pydantic
+直接忽略，不要当作守卫已配置。
+
+**dedup 的引用必须指向还拿得到的正文（2026-08-13）**：`ReadFileDedupMiddleware`（第 11 项）
+返回的引用让模型「翻回上一次读取」，但 Summarization（第 16 项）可能已经把那条 `ToolMessage`
+删掉了 —— 两个中间件各自正确，组合起来给出一条悬空指针，而 `read_file` 是模型取回该内容的
+唯一手段。现在命中后先按 `tool_call_id` 查 transcript：查得到（或首读已外部化到磁盘）才给
+引用，查得到消息集合但首读不在其中就放行正文；**无 `state` / 无 `messages` 时保持原行为**
+（那是「未知」，不能读成「已丢」）。会话 `7512ebd2`：判定子代理被这样挡掉
+`judgment-schema.md` 与 `schema_example.json`，自创输出 schema 与文件名，整单被产物闸作废。
+
+表中省略的编号（13–15、18、23、27–28）是主 agent 专属且不参与 `wrap_tool_call`/`wrap_model_call`
+的上下文类中间件，说明见 `AGENTS.md`。
 
 ## 执行流程
 

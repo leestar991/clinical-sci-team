@@ -48,7 +48,10 @@ You have access to the sandbox environment:
 - Output files: `/mnt/user-data/outputs`
 </working_directory>
 """,
-    tools=["bash", "read_file", "write_file", "str_replace"],
+    # apply_json_patches: repair tasks are delegated here (see the eligibility skills'
+    # judgment-repair / criteria-repair references), and those rules require object-level
+    # JSON edits — a whitelist without it silently forces the agent back to write_file.
+    tools=["bash", "read_file", "write_file", "str_replace", "apply_json_patches"],
     disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     model="inherit",
     max_turns=50,

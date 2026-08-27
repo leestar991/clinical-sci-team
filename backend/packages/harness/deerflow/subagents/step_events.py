@@ -19,6 +19,7 @@ the streaming and persistence call sites share one definition of a "step".
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -174,6 +175,15 @@ def subagent_run_event(chunk: Any) -> dict[str, Any] | None:
     persistable subagent lifecycle event, or ``None`` for any chunk that is not a
     subagent event (so the worker only persists what it recognizes). ``thread_id``
     / ``run_id`` are filled in by the caller.
+
+    Every record carries ``created_at`` stamped **here**, when the step happened. Omitting
+    it let the store default to insert time, and these events do not go in one at a time:
+    ``SubagentStepEventBuffer`` batches at ``FLUSH_THRESHOLD=25``, so a whole run of steps
+    shared the timestamp of whichever step happened to fill the buffer. In session
+    ``a7c19ea1`` a 127-step task landed on 7 distinct second values, which makes per-step
+    timing not merely imprecise but wrong — the only usable source was the poll lines in
+    ``gateway.log`` at 5s resolution. ``RunJournal._put`` has always stamped its own events
+    this way; this brings subagent steps onto the same clock.
     """
     if not isinstance(chunk, dict):
         return None
@@ -183,6 +193,7 @@ def subagent_run_event(chunk: Any) -> dict[str, Any] | None:
         return None
 
     task_id = chunk.get("task_id")
+    created_at = datetime.now(UTC).isoformat()
 
     if event == "task_started":
         return {
@@ -190,6 +201,7 @@ def subagent_run_event(chunk: Any) -> dict[str, Any] | None:
             "category": SUBAGENT_EVENT_CATEGORY,
             "content": {"task_id": task_id, "description": chunk.get("description")},
             "metadata": {"task_id": task_id},
+            "created_at": created_at,
         }
 
     if event == "task_running":
@@ -199,6 +211,7 @@ def subagent_run_event(chunk: Any) -> dict[str, Any] | None:
             "category": SUBAGENT_EVENT_CATEGORY,
             "content": build_subagent_step(chunk.get("message") or {}, task_id=task_id, message_index=message_index),
             "metadata": {"task_id": task_id, "message_index": message_index},
+            "created_at": created_at,
         }
 
     status = _TERMINAL_EVENT_STATUS.get(event)
@@ -217,11 +230,31 @@ def subagent_run_event(chunk: Any) -> dict[str, Any] | None:
             content["error"] = error
             if error_truncated:
                 content["error_truncated"] = True
+        metadata: dict[str, Any] = {"task_id": task_id}
+        # Why the task stopped, when the reason is a resource ceiling rather than the work
+        # being finished (``recursion_limit`` / ``token_budget``). Persisted so an offline
+        # report can tell "this task ran out of allowance" apart from "this task broke",
+        # and so a reviewer can see that a retry was deliberately skipped.
+        stop_reason = chunk.get("stop_reason")
+        if isinstance(stop_reason, str) and stop_reason:
+            metadata["stop_reason"] = stop_reason
+            content["stop_reason"] = stop_reason
+        # Per-task token attribution. ``task_tool`` already puts a compact
+        # ``usage`` summary on every terminal chunk; persisting it here is what
+        # makes "which subagent spent the tokens" answerable offline. Without it
+        # usage survives only as a run-level scalar (``RunJournal`` folds
+        # subagent records into ``_subagent_tokens``) and the task_id is lost.
+        # Absent usage stays absent — never synthesised as 0, which would make a
+        # failed task look free.
+        usage = chunk.get("usage")
+        if isinstance(usage, dict) and usage:
+            metadata["usage"] = usage
         return {
             "event_type": "subagent.end",
             "category": SUBAGENT_EVENT_CATEGORY,
             "content": content,
-            "metadata": {"task_id": task_id},
+            "metadata": metadata,
+            "created_at": created_at,
         }
 
     return None

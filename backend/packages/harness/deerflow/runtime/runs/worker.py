@@ -201,6 +201,46 @@ class _SubagentEventBuffer:
             logger.warning("Run %s: failed to persist %d subagent step event(s)", self._run_id, len(batch), exc_info=True)
 
 
+async def _check_terminal_artifacts(
+    runtime_ctx: dict[str, Any],
+    sandbox: Any | None = None,
+) -> list[str] | None:
+    """Verify that the agent's declared terminal artifacts exist in the sandbox.
+
+    Reads ``terminal_artifacts`` from the runtime context (set by the agent
+    config).  Returns a list of missing artifact paths, or ``None`` when no
+    artifacts are declared or the check cannot be performed (e.g. no sandbox).
+
+    This is a run-level gate: a run that completes without producing its
+    declared deliverables is marked ``error`` rather than ``success``.
+    """
+    terminal_artifacts = runtime_ctx.get("terminal_artifacts")
+    if not terminal_artifacts or not isinstance(terminal_artifacts, list):
+        return None
+    if sandbox is None:
+        return None
+
+    missing: list[str] = []
+    for path in terminal_artifacts:
+        if not isinstance(path, str):
+            continue
+        try:
+            # Use the sandbox to check file existence
+            await sandbox.download_file(path, max_bytes=1)
+        except OSError as exc:
+            import errno
+
+            if getattr(exc, "errno", None) == errno.EFBIG:
+                # File exists but is larger than 1 byte — that's fine
+                continue
+            missing.append(path)
+        except Exception:
+            # Any other error means the file is not accessible
+            missing.append(path)
+
+    return missing if missing else None
+
+
 async def run_agent(
     bridge: StreamBridge,
     run_manager: RunManager,
@@ -503,7 +543,30 @@ async def run_agent(
             error_msg = error_msg or "LLM provider failed after retries"
             await run_manager.set_status(run_id, RunStatus.error, error=error_msg)
         else:
-            await run_manager.set_status(run_id, RunStatus.success)
+            # Run-level artifact gate: verify terminal artifacts exist before
+            # marking success.  Reads the agent's declared terminal_artifacts
+            # from the runtime context; skips the check when none are declared
+            # or when the sandbox is not available.
+            sandbox_for_gate = None
+            try:
+                if checkpointer is not None:
+                    ckpt_config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+                    ckpt_tuple = await checkpointer.aget_tuple(ckpt_config)
+                    if ckpt_tuple is not None:
+                        ckpt = getattr(ckpt_tuple, "checkpoint", {}) or {}
+                        sandbox_for_gate = ckpt.get("channel_values", {}).get("sandbox")
+            except Exception:
+                logger.debug("Run %s: could not read sandbox for artifact gate", run_id, exc_info=True)
+            missing_artifacts = await _check_terminal_artifacts(
+                runtime_ctx=runtime_ctx,
+                sandbox=sandbox_for_gate,
+            )
+            if missing_artifacts:
+                error_msg = f"Run completed but terminal artifacts are missing: {', '.join(missing_artifacts)}"
+                logger.warning("Run %s: %s", run_id, error_msg)
+                await run_manager.set_status(run_id, RunStatus.error, error=error_msg)
+            else:
+                await run_manager.set_status(run_id, RunStatus.success)
 
     except asyncio.CancelledError:
         await run_manager.set_finalizing(run_id, True)

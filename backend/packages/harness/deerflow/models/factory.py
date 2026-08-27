@@ -58,6 +58,64 @@ def _enable_stream_usage_by_default(model_use_path: str, model_settings_from_con
 _DEFAULT_STREAM_CHUNK_TIMEOUT_SECONDS: float = 240.0
 
 
+# DeepSeek collapses several ``reasoning_effort`` values onto the same internal
+# budget: ``medium`` / ``high`` / ``xhigh`` all mean ``high``
+# (https://api-docs.deepseek.com/zh-cn/guides/thinking_mode). The frontend's four
+# levels (minimal / low / medium / high) would therefore give the user only three
+# distinct behaviours, with the UI's top two levels indistinguishable, while
+# DeepSeek's genuinely deepest level (``max``) stayed unreachable. This table
+# spreads the four UI levels across four values that DeepSeek actually
+# differentiates.
+#
+# Note ``high -> max`` raises both latency and cost for the UI's top level; that
+# is the intended trade-off for making "高" mean something stronger than "中".
+_DEEPSEEK_EFFORT_REMAP: dict[str, str] = {
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "high",
+    "high": "max",
+}
+
+
+def _is_deepseek_native_endpoint(model_settings_from_config: dict) -> bool:
+    """Whether the model talks to DeepSeek's own API rather than a compatible gateway.
+
+    ``PatchedChatDeepSeek`` is deliberately reused for many OpenAI-compatible
+    providers (Doubao/Ark, Kimi, Novita, ...), so the provider class says nothing
+    about which effort vocabulary the endpoint accepts — only DeepSeek's own API
+    is known to take ``max``. Matching on the endpoint host keeps the remap from
+    sending a value those gateways would reject.
+    """
+    for key in ("base_url", "api_base", "openai_api_base"):
+        value = model_settings_from_config.get(key)
+        if value and "api.deepseek.com" in str(value):
+            return True
+    return False
+
+
+def _resolve_reasoning_effort(model_settings_from_config: dict, kwargs: dict) -> None:
+    """Collapse the runtime and config ``reasoning_effort`` into a single value.
+
+    Two independent sources can supply ``reasoning_effort``: the caller's kwargs
+    (the frontend's reasoning-depth selection, threaded through
+    ``make_lead_agent``) and ``model_settings_from_config`` (either an explicit
+    ``config.yaml`` field or the ``minimal`` written by the thinking-disabled
+    branch above). Leaving both in place makes the final
+    ``model_class(**kwargs, **model_settings_from_config)`` raise
+    ``TypeError: got multiple values for keyword argument 'reasoning_effort'``.
+
+    The runtime value wins because it carries the user's per-request choice, but
+    an explicit ``None`` is dropped rather than allowed to erase a configured
+    value — ``make_lead_agent`` passes ``None`` whenever the run context omits
+    the key (IM channels never set it).
+    """
+    if "reasoning_effort" not in kwargs:
+        return
+    explicit = kwargs.pop("reasoning_effort")
+    if explicit is not None:
+        model_settings_from_config["reasoning_effort"] = explicit
+
+
 def _apply_stream_chunk_timeout_default(model_use_path: str, model_settings_from_config: dict) -> None:
     """Inject a generous ``stream_chunk_timeout`` for OpenAI-compatible clients.
 
@@ -155,9 +213,39 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         elif has_thinking_settings and effective_wte.get("thinking", {}).get("type"):
             # Native langchain_anthropic: thinking is a direct constructor parameter
             model_settings_from_config["thinking"] = {"type": "disabled"}
+        elif not has_thinking_settings:
+            # Every branch above needs the model to have declared *some* thinking setting,
+            # so a model that declares none silently ignores `thinking_enabled=False` and
+            # reasons at whatever the provider defaults to. That silence is what let the
+            # bug in session ``a7c19ea1`` survive: ``deepseek-v4-flash`` is the summariser
+            # (``summarization.model_name``), the middleware had always passed
+            # ``thinking_enabled=False``, and reasoning still consumed the model's entire
+            # ``max_tokens: 8192`` — 16 of 54 compaction attempts (30%) returned an empty
+            # summary, every one ``finish_reason='length'`` with 13k–25k reasoning chars
+            # and no body. Nothing in the logs pointed at the model config.
+            # Warn rather than raise: a model with no thinking settings may simply not
+            # support thinking, which is a legitimate configuration.
+            logger.warning(
+                "Model %s: thinking was requested OFF but the model declares no thinking settings "
+                "(when_thinking_disabled / when_thinking_enabled / thinking), so the request is a "
+                "no-op and reasoning stays uncapped. If this model reasons, add `when_thinking_disabled` "
+                "in config.yaml — an uncapped reasoning budget can consume all of max_tokens (%s) and "
+                "return an empty body.",
+                name,
+                model_settings_from_config.get("max_tokens", "unset"),
+            )
     if not model_config.supports_reasoning_effort:
         kwargs.pop("reasoning_effort", None)
         model_settings_from_config.pop("reasoning_effort", None)
+    else:
+        # Must run *after* the thinking-disabled branch above, so the ``minimal``
+        # that branch injects is already in ``model_settings_from_config`` and can
+        # be overridden by an explicit runtime value.
+        _resolve_reasoning_effort(model_settings_from_config, kwargs)
+        if _is_deepseek_native_endpoint(model_settings_from_config):
+            remapped = _DEEPSEEK_EFFORT_REMAP.get(model_settings_from_config.get("reasoning_effort", ""))
+            if remapped is not None:
+                model_settings_from_config["reasoning_effort"] = remapped
 
     _enable_stream_usage_by_default(model_config.use, model_settings_from_config)
     _apply_stream_chunk_timeout_default(model_config.use, model_settings_from_config)
@@ -169,13 +257,16 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         # The ChatGPT Codex endpoint currently rejects max_tokens/max_output_tokens.
         model_settings_from_config.pop("max_tokens", None)
 
-        # Use explicit reasoning_effort from frontend if provided (low/medium/high)
-        explicit_effort = kwargs.pop("reasoning_effort", None)
+        # ``_resolve_reasoning_effort`` has already folded any runtime kwarg into
+        # ``model_settings_from_config``, so the effective value is read from
+        # there rather than from kwargs.
+        effective_effort = model_settings_from_config.get("reasoning_effort")
         if not thinking_enabled:
             model_settings_from_config["reasoning_effort"] = "none"
-        elif explicit_effort and explicit_effort in ("low", "medium", "high", "xhigh"):
-            model_settings_from_config["reasoning_effort"] = explicit_effort
-        elif "reasoning_effort" not in model_settings_from_config:
+        elif effective_effort not in ("low", "medium", "high", "xhigh"):
+            # The Codex endpoint's vocabulary does not include ``minimal``, so
+            # anything outside the supported set — including an unset value —
+            # falls back to the default rather than being forwarded verbatim.
             model_settings_from_config["reasoning_effort"] = "medium"
 
     # For MindIE models: enforce conservative retry defaults.

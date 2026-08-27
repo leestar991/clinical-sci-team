@@ -2,8 +2,10 @@
 
 import asyncio
 import atexit
+import errno
 import logging
 import os
+import posixpath
 import threading
 import uuid
 from collections.abc import Callable, Coroutine
@@ -28,6 +30,8 @@ from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill
 from deerflow.subagents.config import SubagentConfig, resolve_subagent_model_name
 from deerflow.subagents.step_events import capture_new_step_messages
+from deerflow.subagents.stop_reasons import RESOURCE_CEILING_STOP_REASONS as _RESOURCE_CEILING_STOP_REASONS
+from deerflow.subagents.stop_reasons import classify_stop_reason
 from deerflow.subagents.token_collector import SubagentTokenCollector
 from deerflow.trace_context import DEERFLOW_TRACE_METADATA_KEY
 from deerflow.tracing import build_tracing_callbacks, inject_langfuse_metadata
@@ -46,6 +50,19 @@ _previous_shutdown_isolated_subagent_loop = globals().get("_shutdown_isolated_su
 if callable(_previous_shutdown_isolated_subagent_loop):
     atexit.unregister(_previous_shutdown_isolated_subagent_loop)
     _previous_shutdown_isolated_subagent_loop()
+
+
+def _get_sandbox_provider():
+    """Resolve the sandbox provider.
+
+    Indirection with a lazy import for two reasons: importing ``deerflow.sandbox`` at
+    module load would re-enter the ``deerflow.agents`` <-> ``deerflow.subagents`` import
+    cycle this module already works around, and tests need a seam to substitute a fake
+    provider without a real sandbox.
+    """
+    from deerflow.sandbox.sandbox_provider import get_sandbox_provider
+
+    return get_sandbox_provider()
 
 
 class SubagentStatus(Enum):
@@ -81,6 +98,10 @@ class SubagentResult:
         started_at: When execution started.
         completed_at: When execution completed.
         ai_messages: List of complete AI messages (as dicts) generated during execution.
+        stop_reason: Why the task stopped, when the reason is a resource ceiling rather
+            than the work being done (``recursion_limit`` / ``token_budget``). ``task``
+            uses it to decide whether a retry could possibly do better; ``None`` means the
+            ordinary path (completed, or a failure that is worth retrying).
     """
 
     task_id: str
@@ -88,6 +109,7 @@ class SubagentResult:
     status: SubagentStatus
     result: str | None = None
     error: str | None = None
+    stop_reason: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     ai_messages: list[dict[str, Any]] | None = None
@@ -107,6 +129,7 @@ class SubagentResult:
         *,
         result: str | None = None,
         error: str | None = None,
+        stop_reason: str | None = None,
         completed_at: datetime | None = None,
         ai_messages: list[dict[str, Any]] | None = None,
         token_usage_records: list[dict[str, int | str | None]] | None = None,
@@ -128,6 +151,8 @@ class SubagentResult:
                 self.result = result
             if error is not None:
                 self.error = error
+            if stop_reason is not None:
+                self.stop_reason = stop_reason
             if ai_messages is not None:
                 self.ai_messages = ai_messages
             if token_usage_records is not None:
@@ -135,6 +160,11 @@ class SubagentResult:
             self.completed_at = completed_at or datetime.now()
             self.status = status
             return True
+
+
+#: Re-exported from ``stop_reasons`` (a leaf module) so ``task_tool`` can import the
+#: definitions without importing this module, which the test suite replaces with a mock.
+RESOURCE_CEILING_STOP_REASONS = _RESOURCE_CEILING_STOP_REASONS
 
 
 # Global storage for background task results
@@ -296,6 +326,8 @@ class SubagentExecutor:
         oauth_id: str | None = None,
         run_id: str | None = None,
         deerflow_trace_id: str | None = None,
+        run_journal: Any | None = None,
+        expected_outputs: list[str] | None = None,
     ):
         """Initialize the executor.
 
@@ -320,6 +352,17 @@ class SubagentExecutor:
                 the same run as the lead agent.
             deerflow_trace_id: DeerFlow request-level correlation id propagated
                 from the parent run for Langfuse metadata correlation.
+            run_journal: Parent run's ``RunJournal``, propagated so middleware
+                running *inside* the subagent can persist its audit events
+                (``middleware:*`` run events). Only the run worker creates one, and
+                it writes it into the lead context, so without this a subagent's
+                ``journal.record_middleware(...)`` call found nothing and returned —
+                which is why subagent-level summarization could not be observed.
+            expected_outputs: Absolute sandbox paths (under ``/mnt/user-data/``) this task
+                must have written. Verified before the task may report COMPLETED; a
+                missing or empty artifact turns the result into FAILED. Empty/None means
+                "no declaration" and skips the check entirely, which is the pre-existing
+                behaviour for every caller that does not opt in.
         """
         self.config = config
         self.app_config = app_config
@@ -333,6 +376,7 @@ class SubagentExecutor:
             self.model_name = None
         self.sandbox_state = sandbox_state
         self.thread_data = thread_data
+        self.expected_outputs = list(expected_outputs or [])
         self.thread_id = thread_id
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
@@ -343,6 +387,7 @@ class SubagentExecutor:
         self.oauth_id = oauth_id
         self.run_id = run_id
         self.deerflow_trace_id = deerflow_trace_id
+        self.run_journal = run_journal
 
         self._base_tools = _filter_tools(
             tools,
@@ -352,6 +397,133 @@ class SubagentExecutor:
         self.tools = self._base_tools
 
         logger.info(f"[trace={self.trace_id}] SubagentExecutor initialized: {config.name} with {len(self.tools)} tools")
+
+    # Bounded probe: existence + "is it more than an empty container" is all this needs,
+    # so never pull a whole artifact into memory to answer it.
+    _EXPECTED_OUTPUT_PROBE_BYTES = 4096
+    # ``{}`` / ``[]`` / whitespace are what a subagent leaves behind when it created the
+    # file and then failed to fill it — indistinguishable from "no artifact" downstream.
+    _EMPTY_ARTIFACT_PAYLOADS = frozenset({"", "{}", "[]", "null"})
+
+    async def _verify_expected_outputs(self) -> str | None:
+        """Return an error message when a declared artifact is missing/empty, else ``None``.
+
+        Why this exists: ``COMPLETED`` is the subagent's own claim about its work. In thread
+        ``88df83a8`` an EX judgment task returned ``completed`` with a Markdown "QC report"
+        while the artifact it was told to write (``judgments_draft_MCRC-2150006_EX.json``)
+        did not exist — the lead only discovered that 8 minutes later by running the
+        structure gate itself, and the re-dispatch was cut off when the run ended.
+
+        Design notes:
+        * ``download_file`` is the probe because its contract requires both the local and
+          the remote sandbox to raise ``OSError`` for a missing path. ``list_dir`` cannot
+          be used: for the local sandbox it returns host-resolved paths, which never
+          compare equal to the ``/mnt/user-data/...`` virtual path the caller declared.
+        * ``max_bytes`` is a **size limit, not a read window**: every implementation raises
+          ``OSError(EFBIG)`` rather than returning a prefix. So ``EFBIG`` is the one errno
+          that proves the artifact exists *and* holds more than the probe window — i.e. the
+          strongest "non-empty" evidence available — and must pass. Treating it as absent
+          made the gate fire on every artifact larger than the window: in thread
+          ``9f069246`` all three parse tasks were failed while their JSON sat on disk
+          (32 KB / 56 KB), burning two IN retries. Only ``ENOENT`` and other errnos mean
+          missing.
+        * Sandbox APIs are synchronous, so the probe runs in a worker thread — a direct
+          call would block the event loop that LangGraph's ASGI runtime shares.
+        * Anything that prevents the check from running (no sandbox state, no provider,
+          unexpected error) **skips** it. A verification step that can fail a task on its
+          own infrastructure problems is worse than no verification: tasks that never
+          touch files would start failing for reasons the model cannot act on.
+        """
+        if not self.expected_outputs:
+            return None
+
+        sandbox_id = (self.sandbox_state or {}).get("sandbox_id")
+        if not sandbox_id:
+            logger.warning(f"[trace={self.trace_id}] Subagent {self.config.name} declared expected_outputs but has no sandbox state; skipping artifact check")
+            return None
+
+        try:
+            sandbox = _get_sandbox_provider().get(sandbox_id)
+        except Exception:
+            logger.warning(f"[trace={self.trace_id}] Subagent {self.config.name} could not resolve sandbox {sandbox_id!r}; skipping artifact check", exc_info=True)
+            return None
+        if sandbox is None:
+            logger.warning(f"[trace={self.trace_id}] Subagent {self.config.name} sandbox {sandbox_id!r} not found; skipping artifact check")
+            return None
+
+        missing: list[str] = []
+        empty: list[str] = []
+        for path in self.expected_outputs:
+            try:
+                payload = await asyncio.to_thread(sandbox.download_file, path, max_bytes=self._EXPECTED_OUTPUT_PROBE_BYTES)
+            except OSError as exc:
+                # Bigger than the probe window ⇒ it exists and is not an empty container.
+                if exc.errno == errno.EFBIG:
+                    continue
+                missing.append(path)
+                continue
+            except Exception:
+                logger.warning(f"[trace={self.trace_id}] Subagent {self.config.name} artifact probe failed for {path!r}; treating as present", exc_info=True)
+                continue
+            text = payload.decode("utf-8", errors="ignore").strip() if isinstance(payload, bytes | bytearray) else str(payload).strip()
+            if text in self._EMPTY_ARTIFACT_PAYLOADS:
+                empty.append(path)
+
+        if not missing and not empty:
+            return None
+
+        from deerflow.tools.builtins.task_tool import EXPECTED_OUTPUTS_FAILURE_MARKER
+
+        parts = [f"Subagent reported completion but {EXPECTED_OUTPUTS_FAILURE_MARKER}."]
+        if missing:
+            parts.append(f"missing={missing}")
+        if empty:
+            parts.append(f"empty={empty}")
+        found = await self._siblings_of_missing_outputs(sandbox, missing)
+        if found:
+            parts.append(f"Files that DO exist in the target directory: {found}. If one of them holds the work under a different name, the content is not lost — but the declared path is what downstream consumes.")
+        parts.append("Write each declared path with write_file (or apply_json_patches for an existing file) before finishing; do not substitute a differently named file.")
+        return " ".join(parts)
+
+    # Enough to name the wrong-filename case without turning the error into a directory
+    # dump: the failures worth reporting have one or two stray artifacts, not twenty.
+    _SIBLING_LISTING_LIMIT = 8
+
+    async def _siblings_of_missing_outputs(self, sandbox: Any, missing: list[str]) -> list[str]:
+        """Base names present in the directories where ``missing`` paths should have been.
+
+        Why the gate reports this: "missing=[...]" tells the lead the artifact is absent
+        but not *why*, and the two causes need opposite responses. A subagent that judged
+        nothing must be re-dispatched; one that judged correctly and saved to
+        ``judgment_IN.md`` or ``judgments_EX.json`` has usable work sitting next to the
+        declared path. In thread ``7512ebd2`` the lead spent five turns and three ``bash``
+        calls rediscovering exactly that by hand, per track, after every failure.
+
+        ``list_dir`` returns host-resolved paths on the local sandbox, so only base names
+        are usable here — which is all the distinction needs. Every failure path is
+        swallowed: a listing is a diagnostic nicety and must never replace the real error.
+        """
+        directories: list[str] = []
+        for path in missing:
+            parent = posixpath.dirname(path)
+            if parent and parent not in directories:
+                directories.append(parent)
+
+        names: list[str] = []
+        for directory in directories:
+            try:
+                entries = await asyncio.to_thread(sandbox.list_dir, directory, 1)
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, str):
+                    continue
+                name = posixpath.basename(entry.rstrip("/"))
+                if name and name not in names:
+                    names.append(name)
+        return names[: self._SIBLING_LISTING_LIMIT]
 
     def _create_agent(self, tools: list[BaseTool] | None = None, *, deferred_setup: "DeferredToolSetup | None" = None):
         """Create the agent instance.
@@ -604,9 +776,21 @@ class SubagentExecutor:
             context["oauth_provider"] = self.oauth_provider
             context["oauth_id"] = self.oauth_id
             context["run_id"] = self.run_id
+            # Per-task isolation boundary for run-scoped middleware state. Every task of a
+            # run shares thread_id / run_id / sandbox_id, so this is the only key that can
+            # tell them apart — without it ReadFileDedupMiddleware would answer task B's
+            # first read of a file with "you already read this" about task A's read, which
+            # B's isolated context does not contain and cannot retrieve.
+            context["task_id"] = result.task_id
             if self.deerflow_trace_id:
                 context[DEERFLOW_TRACE_METADATA_KEY] = self.deerflow_trace_id
             context["is_subagent"] = True
+            # Run-scoped journal, so middleware inside the subagent can persist its own
+            # `middleware:*` audit events. Absent on embedded / internal-auth paths — the
+            # key is then omitted entirely rather than set to None, because consumers
+            # test for presence and a None value would look like a live journal.
+            if self.run_journal is not None:
+                context["__run_journal"] = self.run_journal
 
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} starting async execution with max_turns={self.config.max_turns}")
 
@@ -728,6 +912,23 @@ class SubagentExecutor:
             if final_result is None:
                 final_result = "No response generated"
 
+            # A subagent claiming COMPLETED is a self-assessment. Verify the artifacts it
+            # was told to produce before letting that claim through (see
+            # ``_verify_expected_outputs``).
+            outputs_error = await self._verify_expected_outputs()
+            if outputs_error is not None:
+                logger.error(f"[trace={self.trace_id}] Subagent {self.config.name} reported completion but failed the artifact check: {outputs_error}")
+                result.try_set_terminal(
+                    SubagentStatus.FAILED,
+                    error=outputs_error,
+                    # No stop_reason on purpose: this is not a resource ceiling, so
+                    # ``task``'s existing single retry applies — the same re-dispatch the
+                    # lead had to perform by hand in thread 88df83a8.
+                    stop_reason=None,
+                    token_usage_records=token_usage_records,
+                )
+                return result
+
             result.try_set_terminal(
                 SubagentStatus.COMPLETED,
                 result=final_result,
@@ -739,6 +940,7 @@ class SubagentExecutor:
             result.try_set_terminal(
                 SubagentStatus.FAILED,
                 error=str(e),
+                stop_reason=classify_stop_reason(e),
                 token_usage_records=collector.snapshot_records() if collector is not None else None,
             )
 

@@ -43,6 +43,36 @@ class LoopDetectionConfig(BaseModel):
         ge=1,
         description="Number of recent tool-call sets to track per thread",
     )
+    cumulative_counting: bool = Field(
+        default=False,
+        description=(
+            "Count identical tool-call sets cumulatively per scope instead of only inside the "
+            "sliding window. Needed when repeats are spaced further apart than window_size "
+            "(a judgment subagent interleaves reads/greps between gate re-runs, so the hash "
+            "slides out and the counter never reaches the threshold). Off by default because "
+            "it makes detection strictly more aggressive than the historical window semantics."
+        ),
+    )
+    mutation_reset: bool = Field(
+        default=False,
+        description=(
+            "Restart a call set's repeat counter when a DIFFERENT call set mutated state "
+            "since its last occurrence (write_file / str_replace / apply_json_patches / a "
+            "write-shaped bash command). An identical re-check after a fix is prescribed "
+            "workflow, not a loop; the reset ignores bumps the call set itself caused and is "
+            "bounded by mutation_reset_budget. Off by default so lead-agent behaviour is "
+            "unchanged; the subagent chain enables it."
+        ),
+    )
+    mutation_reset_budget: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Cap on mutation resets consumed per call-set hash. Bounds the alternating-writer "
+            "hole (two mutating call sets can otherwise reset each other forever) while staying "
+            "above what legitimate repair->verify cycles need (observed: 2-3 per task)."
+        ),
+    )
     max_tracked_threads: int = Field(
         default=100,
         ge=1,
@@ -62,6 +92,15 @@ class LoopDetectionConfig(BaseModel):
         default_factory=dict,
         description=("Per-tool overrides for tool_freq_warn / tool_freq_hard_limit, keyed by tool name. Values can be higher or lower than the global defaults. Commonly used to raise thresholds for high-frequency tools like bash."),
     )
+    # ⛔ REMOVED (2026-08-19): verification_patterns / verification_warn_threshold /
+    # verification_hard_limit. The pattern list defaulted to hardcoded gate-script filenames
+    # living under the gitignored ``skills/custom/``, which put business-skill knowledge inside
+    # the publishable harness package, and the bare-substring match let any command claim the
+    # wider budget by chaining a listed name onto it. Use ``tool_freq_overrides`` for
+    # legitimately high-frequency tools; see the middleware module's removal note for why the
+    # underlying false positive belongs in ``_stable_tool_key`` instead.
+    # ⚠️ A config.yaml still carrying these three keys stays loadable — extra keys are ignored
+    # — but they no longer do anything. Delete them so the file does not imply a live guard.
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> "LoopDetectionConfig":

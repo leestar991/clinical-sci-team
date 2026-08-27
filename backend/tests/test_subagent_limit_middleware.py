@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from deerflow.agents.middlewares.subagent_limit_middleware import (
     MAX_CONCURRENT_SUBAGENTS,
@@ -197,17 +197,28 @@ class TestSanitizeTaskCalls:
         assert mw._sanitize_task_calls({"messages": [msg]}) is None
 
 
+def _ai_message(result: dict) -> AIMessage:
+    """The sanitized AIMessage — appended last, after any injected error feedback."""
+    ai = [m for m in result["messages"] if isinstance(m, AIMessage)]
+    assert len(ai) == 1
+    return ai[0]
+
+
+def _error_feedback_ids(result: dict) -> set[str]:
+    return {m.tool_call_id for m in result["messages"] if isinstance(m, ToolMessage)}
+
+
 class TestIncompleteTaskCallDropping:
+    """Incomplete calls stay in the AIMessage (ids preserved) but are cancelled by an
+    injected error ToolMessage whose tool_call_id matches — the tool node resolves
+    only calls WITHOUT a result, so the call never executes."""
+
     def test_empty_args_task_call_dropped(self):
         mw = SubagentLimitMiddleware()
-        msg = AIMessage(
-            content="",
-            tool_calls=[_incomplete_task_call("bad", **{})],
-        )
+        msg = AIMessage(content="", tool_calls=[_incomplete_task_call("bad", **{})])
         result = mw._sanitize_task_calls({"messages": [msg]})
         assert result is not None
-        task_calls = [tc for tc in result["messages"][0].tool_calls if tc["name"] == "task"]
-        assert len(task_calls) == 0
+        assert _error_feedback_ids(result) == {"bad"}
 
     def test_incomplete_call_dropped_complete_call_kept(self):
         mw = SubagentLimitMiddleware()
@@ -216,39 +227,35 @@ class TestIncompleteTaskCallDropping:
         msg = AIMessage(content="", tool_calls=[good, bad])
         result = mw._sanitize_task_calls({"messages": [msg]})
         assert result is not None
-        task_calls = [tc for tc in result["messages"][0].tool_calls if tc["name"] == "task"]
-        assert len(task_calls) == 1
-        assert task_calls[0]["id"] == "good"
+        assert _error_feedback_ids(result) == {"bad"}
+        kept_ids = {tc["id"] for tc in _ai_message(result).tool_calls if tc["name"] == "task"}
+        assert "good" in kept_ids  # the complete call survives for execution
 
     def test_all_incomplete_calls_dropped(self):
         mw = SubagentLimitMiddleware()
         calls = [
-            _incomplete_task_call("b1", prompt="p1"),
-            _incomplete_task_call("b2", description="d2"),
-            _incomplete_task_call("b3", subagent_type="general-purpose"),
+            _incomplete_task_call("b1", prompt="p1"),  # missing description + subagent_type
+            _incomplete_task_call("b2", description="d2"),  # missing prompt + subagent_type
+            _incomplete_task_call("b3", subagent_type="general-purpose"),  # missing prompt + description
         ]
         msg = AIMessage(content="", tool_calls=calls)
         result = mw._sanitize_task_calls({"messages": [msg]})
         assert result is not None
-        task_calls = [tc for tc in result["messages"][0].tool_calls if tc["name"] == "task"]
-        assert len(task_calls) == 0
+        assert _error_feedback_ids(result) == {"b1", "b2", "b3"}
 
     def test_incomplete_dropped_before_concurrency_cap_applied(self):
-        """Incomplete calls should be dropped first; cap only applies to remaining valid calls."""
+        """Incomplete calls are cancelled first; the cap applies only to complete ones."""
         mw = SubagentLimitMiddleware(max_concurrent=2)
         calls = [
             _task_call("t1"),
             _task_call("t2"),
-            _incomplete_task_call("bad"),  # incomplete — should be dropped
+            _incomplete_task_call("bad"),
         ]
         msg = AIMessage(content="", tool_calls=calls)
         result = mw._sanitize_task_calls({"messages": [msg]})
         assert result is not None
-        task_calls = [tc for tc in result["messages"][0].tool_calls if tc["name"] == "task"]
-        # After dropping incomplete: 2 valid, cap=2 → no excess truncation
-        assert len(task_calls) == 2
-        assert task_calls[0]["id"] == "t1"
-        assert task_calls[1]["id"] == "t2"
+        complete_ids = [tc["id"] for tc in _ai_message(result).tool_calls if tc["name"] == "task" and tc["id"] not in _error_feedback_ids(result)]
+        assert complete_ids == ["t1", "t2"]  # no excess truncation
 
     def test_non_task_calls_preserved_when_incomplete_dropped(self):
         mw = SubagentLimitMiddleware()
@@ -262,12 +269,43 @@ class TestIncompleteTaskCallDropping:
         )
         result = mw._sanitize_task_calls({"messages": [msg]})
         assert result is not None
-        updated_msg = result["messages"][0]
-        names = [tc["name"] for tc in updated_msg.tool_calls]
+        names = [tc["name"] for tc in _ai_message(result).tool_calls]
         assert "bash" in names
         assert "read" in names
-        task_calls = [tc for tc in updated_msg.tool_calls if tc["name"] == "task"]
-        assert len(task_calls) == 0
+        assert _error_feedback_ids(result) == {"bad"}
+
+
+class TestPromptFileCompleteness:
+    """f9231297's root cause: the official rendered-template form passes ``prompt_file``
+    (never ``prompt``), and the completeness check used to reject it."""
+
+    def test_prompt_file_task_call_is_complete(self):
+        mw = SubagentLimitMiddleware()
+        call = {
+            "name": "task",
+            "id": "pf1",
+            "args": {
+                "description": "判定IN轨b1批",
+                "subagent_type": "general-purpose",
+                "prompt_file": "/mnt/user-data/workspace/patients/P/prompts/judge_prompt.md",
+                "expected_outputs": ["/mnt/.../judgments_draft.json"],
+            },
+        }
+        msg = AIMessage(content="", tool_calls=[call])
+        assert mw._sanitize_task_calls({"messages": [msg]}) is None  # untouched: complete
+
+    def test_missing_both_prompt_forms_is_incomplete(self):
+        mw = SubagentLimitMiddleware()
+        call = {
+            "name": "task",
+            "id": "np1",
+            "args": {"description": "d", "subagent_type": "general-purpose"},
+        }
+        msg = AIMessage(content="", tool_calls=[call])
+        result = mw._sanitize_task_calls({"messages": [msg]})
+        assert result is not None
+        missing_text = next(m.content for m in result["messages"] if isinstance(m, ToolMessage))
+        assert "prompt/prompt_file" in missing_text
 
 
 class TestAfterModel:

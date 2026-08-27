@@ -289,7 +289,13 @@ class TestValidateInput:
 
     def test_command_exceeding_max_length_rejected(self):
         cmd = "a" * 10_001
-        assert self.mw._validate_input(cmd) == "command too long"
+        reason = self.mw._validate_input(cmd)
+        assert reason is not None
+        # 文案带上实际长度、上限与可执行替代方案（thread `dfbb4554`：原先只说
+        # "command too long"，模型连撞三次墙后自己去写生成器脚本绕过）。
+        assert "command too long" in reason
+        assert "10001" in reason and "10000" in reason
+        assert "write_file" in reason and "apply_json_patches" in reason
 
     def test_null_byte_rejected(self):
         assert self.mw._validate_input("ls\x00; rm -rf /") == "null byte detected"

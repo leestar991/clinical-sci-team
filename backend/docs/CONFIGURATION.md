@@ -208,6 +208,64 @@ models:
 
 `PatchedChatMiMo` preserves MiMo's `choices[].message.reasoning_content`, streaming `delta.reasoning_content`, and request-history assistant `reasoning_content` fields. It does not reuse the DeepSeek provider.
 
+#### A reasoning model needs `when_thinking_disabled`, not just `when_thinking_enabled`
+
+Requesting `thinking_enabled: false` — from the API, or internally as the summarisation
+middleware does — only takes effect if the model entry declares thinking settings. Every
+disable branch in `create_chat_model` is guarded on "did this model declare any thinking
+config?", so a reasoning model with neither `when_thinking_disabled` nor
+`when_thinking_enabled` silently ignores the request and reasons at the provider's default.
+
+That silence is expensive on a small `max_tokens`. A summariser configured with
+`max_tokens: 8192` and no thinking keys spent the whole budget on reasoning and returned an
+empty body for 30% of its calls, each one `finish_reason: length` — the compaction was
+skipped, so context kept growing while the tokens were still billed.
+
+Rules of thumb:
+
+- If a model can reason, declare **both** keys. `when_thinking_enabled` alone leaves the
+  off-switch unwired.
+- A model used for a background job (summarisation, title generation) should have thinking
+  explicitly disabled — those calls want body text, not deliberation.
+- The factory logs a warning when thinking is requested off against a model that declared
+  nothing, naming the model and its `max_tokens`. Treat it as a config bug, not noise.
+
+A model that genuinely cannot reason needs no thinking keys; the warning is harmless there.
+
+#### `reasoning_effort`: the depth knob, separate from the on/off switch
+
+`supports_reasoning_effort: true` lets the frontend's reasoning-depth selector reach the
+model. The two settings are independent parameters, sent side by side: the thinking keys
+above control **whether** the model reasons, `reasoning_effort` controls **how much** once
+it does. On DeepSeek the thinking switch wins — `reasoning_effort: high` with
+`thinking.type: disabled` still yields zero reasoning tokens.
+
+The UI's four levels map onto the wire value like this:
+
+| UI level | `reasoning_effort` sent | On a DeepSeek-native endpoint |
+| -------- | ----------------------- | ----------------------------- |
+| 最低 / minimal | `minimal` | `minimal` |
+| 低 / low | `low` | `low` |
+| 中 / medium | `medium` | `high` |
+| 高 / high | `high` | `max` |
+
+The last column exists because DeepSeek collapses `medium`, `high`, and `xhigh` onto one
+internal budget ([thinking-mode docs](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode)),
+which would leave the UI's top two levels indistinguishable while its genuinely deepest
+level stayed unreachable. `create_chat_model` therefore spreads the four levels across four
+values DeepSeek differentiates. **Note the cost**: the top level maps to `max`, which is
+slower and more expensive than `high`.
+
+The remap keys on the endpoint host (`api.deepseek.com`), not on the provider class —
+`PatchedChatDeepSeek` is deliberately reused for Doubao/Ark, Kimi, and Novita, and those
+gateways do not accept `max`. Every other provider receives the UI value verbatim, except
+`CodexChatModel`, whose endpoint has its own vocabulary (`minimal` is not part of it and
+falls back to `medium`).
+
+With `supports_reasoning_effort: false` the value is stripped entirely, so the UI hides the
+selector and the depth choice has no effect — which is the right outcome for a model whose
+endpoint would reject the parameter.
+
 ### Tool Groups
 
 Organize tools into logical groups:

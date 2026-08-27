@@ -15,16 +15,20 @@ from pydantic import PrivateAttr
 
 from deerflow.agents.middlewares.loop_detection_middleware import (
     _HARD_STOP_MSG,
+    _MAX_CUMULATIVE_HASHES,
     _MAX_PENDING_WARNINGS_PER_RUN,
     LoopDetectionMiddleware,
     _hash_tool_calls,
 )
+from deerflow.config.loop_detection_config import LoopDetectionConfig
 
 
-def _make_runtime(thread_id="test-thread", run_id="test-run"):
+def _make_runtime(thread_id="test-thread", run_id="test-run", task_id=None):
     """Build a minimal Runtime mock with context."""
     runtime = MagicMock()
     runtime.context = {"thread_id": thread_id, "run_id": run_id}
+    if task_id is not None:
+        runtime.context["task_id"] = task_id
     return runtime
 
 
@@ -177,6 +181,30 @@ class TestHashToolCalls:
         v1 = {"name": "write_file", "args": {"path": "/tmp/a.py", "content": "v1"}}
         v2 = {"name": "write_file", "args": {"path": "/tmp/a.py", "content": "v2"}}
         assert _hash_tool_calls([v1]) != _hash_tool_calls([v2])
+
+    def test_apply_json_patches_content_affects_hash(self):
+        """两批不同的 patch 必须是两个哈希。
+
+        该工具的 args 只有 `path` 和 `patches`，salient-field 回退只看 `path`，会把
+        「逐条应用 QC 结论」的连续调用折叠成同一个哈希，从而误判成死循环。
+        """
+        a = {
+            "name": "apply_json_patches",
+            "args": {"path": "/mnt/user-data/workspace/j.json", "expected_hash": "abc", "patches": [{"pointer": "/a/conclusion", "op": "replace", "value": "符合"}]},
+        }
+        b = {
+            "name": "apply_json_patches",
+            "args": {"path": "/mnt/user-data/workspace/j.json", "expected_hash": "def", "patches": [{"pointer": "/b/conclusion", "op": "replace", "value": "不符合"}]},
+        }
+        assert _hash_tool_calls([a]) != _hash_tool_calls([b])
+
+    def test_identical_apply_json_patches_calls_still_collide(self):
+        """真正重复的同一批 patch 仍必须被识别为重复（否则熔断失效）。"""
+        call = {
+            "name": "apply_json_patches",
+            "args": {"path": "/mnt/user-data/workspace/j.json", "expected_hash": "abc", "patches": [{"pointer": "/a", "op": "remove"}]},
+        }
+        assert _hash_tool_calls([call]) == _hash_tool_calls([dict(call)])
 
     def test_str_replace_content_affects_hash(self):
         a = {
@@ -1074,3 +1102,419 @@ class TestFromConfig:
         queued = mw._pending_warnings.get(_pending_key(), [])
         assert queued
         assert "LOOP DETECTED" in queued[0]
+
+
+class TestSubagentScopeAndCumulativeCounting:
+    """子代理接入 loop detection（Phase 1 / Task 3）。
+
+    两个缺陷必须一起修，否则接入等于无效或有害：
+
+    1. **滑窗漏检**：判定子代理的 49 次 bash 里夹杂大量 read/grep，两次同参
+       `uncertain_recheck.py` 的间隔常常超过 `window_size=20`，哈希滑出窗口后
+       `history.count()` 永远到不了阈值 —— 12 次同参重跑就是这样没人拦。
+    2. **跨 task 串味**：跟踪键原本只有 `thread_id`，一个 run 内 14 个 task 会把彼此
+       的调用计入同一个计数器，A 的重复会让 B 被硬停。
+    """
+
+    GATE = "python3 /mnt/skills/custom/eligibility-judgment/scripts/uncertain_recheck.py --criteria a.json"
+
+    def test_cumulative_counting_is_off_by_default(self):
+        """默认关闭：lead agent 的滑窗语义（`test_window_sliding`）不能被改掉。"""
+        assert LoopDetectionMiddleware().cumulative_counting is False
+        assert LoopDetectionConfig().cumulative_counting is False
+
+    def test_cumulative_count_survives_window_eviction(self):
+        """同参调用间隔 > window_size 时仍必须累计触发（告警走 pending 队列，不改 state）。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, window_size=2, cumulative_counting=True)
+        runtime = _make_runtime()
+        call = [_bash_call("grep -n foo bar.md")]
+
+        mw._apply(_make_state(tool_calls=call), runtime)
+        for i in range(5):  # 把它挤出滑窗
+            mw._apply(_make_state(tool_calls=[_bash_call(f"other_{i}")]), runtime)
+        mw._apply(_make_state(tool_calls=call), runtime)
+        for i in range(5):
+            mw._apply(_make_state(tool_calls=[_bash_call(f"more_{i}")]), runtime)
+        mw._apply(_make_state(tool_calls=call), runtime)
+
+        queued = mw._pending_warnings.get(_pending_key(), [])
+        assert queued, "第 3 次同参调用必须告警，哪怕早已滑出窗口"
+        assert "LOOP DETECTED" in queued[0]
+
+    def test_cumulative_count_reaches_hard_stop_across_window(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, window_size=2, cumulative_counting=True)
+        runtime = _make_runtime()
+        call = [_bash_call("grep -n foo bar.md")]
+        results = []
+        for i in range(5):
+            results.append(mw._apply(_make_state(tool_calls=call), runtime))
+            mw._apply(_make_state(tool_calls=[_bash_call(f"filler_{i}")]), runtime)
+
+        hard = [r for r in results if r is not None]
+        assert hard, f"5 次同参调用必须硬停，即使中间夹了别的调用：{results}"
+        msgs = hard[-1]["messages"]
+        assert msgs[0].tool_calls == [], "硬停必须剥离 tool_calls"
+        assert _HARD_STOP_MSG in msgs[0].content
+
+    def test_window_sliding_still_resets_when_cumulative_off(self):
+        """回归：关闭累计时行为与改动前一致。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, window_size=5)
+        runtime = _make_runtime()
+        call = [_bash_call("ls")]
+        mw._apply(_make_state(tool_calls=call), runtime)
+        mw._apply(_make_state(tool_calls=call), runtime)
+        for i in range(5):
+            mw._apply(_make_state(tool_calls=[_bash_call(f"other_{i}")]), runtime)
+        mw._apply(_make_state(tool_calls=call), runtime)
+        assert not mw._pending_warnings.get(_pending_key())
+
+    def test_tasks_of_one_run_do_not_share_counters(self):
+        """告警队列按 (thread, run) 归集，所以这里断言计数器本身而非队列。"""
+        mw = LoopDetectionMiddleware(warn_threshold=2, cumulative_counting=True)
+        call = [_bash_call("ls")]
+        task_a = _make_runtime(task_id="task-a")
+        task_b = _make_runtime(task_id="task-b")
+
+        mw._apply(_make_state(tool_calls=call), task_a)
+        mw._apply(_make_state(tool_calls=call), task_a)
+        mw._apply(_make_state(tool_calls=call), task_b)
+
+        scope_a = mw._get_tracking_scope(task_a)
+        scope_b = mw._get_tracking_scope(task_b)
+        assert scope_a != scope_b
+        assert max(mw._cumulative[scope_a].values()) == 2
+        assert max(mw._cumulative[scope_b].values()) == 1, "另一个 task 不得继承计数"
+
+    def test_lead_scope_unchanged_without_task_id(self):
+        """无 task_id 时跟踪键仍是 thread_id —— 既有断言（`mw._history["test-thread"]`）不变。"""
+        mw = LoopDetectionMiddleware(warn_threshold=5)
+        mw._apply(_make_state(tool_calls=[_bash_call("ls")]), _make_runtime())
+        assert "test-thread" in mw._history
+
+    def test_subagent_scope_key_includes_run_and_task(self):
+        mw = LoopDetectionMiddleware(warn_threshold=5)
+        mw._apply(_make_state(tool_calls=[_bash_call("ls")]), _make_runtime(task_id="task-a"))
+        assert "test-thread" not in mw._history
+        assert any("task-a" in scope for scope in mw._history), f"scope 必须含 task_id：{list(mw._history)}"
+
+    def test_gate_script_repeats_still_count_normally(self):
+        """⛔ verification 豁免已删除（2026-08-19）：门禁/哈希这类幂等命令重跑不再有
+        独立预算，与普通调用同阈值计数。合法的修复->验证循环需要更高额度时，应调
+        ``tool_freq_overrides.bash`` 或后续在 ``_stable_tool_key`` 层修复，而不是靠
+        文件名白名单。这里钉住回归行为：同一条门禁命令第 3 次照常告警。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, cumulative_counting=True)
+        runtime = _make_runtime(task_id="task-a")
+        call = [_bash_call(self.GATE)]
+        for _ in range(2):
+            mw._apply(_make_state(tool_calls=call), runtime)
+        assert not mw._pending_warnings.get(_pending_key())
+        mw._apply(_make_state(tool_calls=call), runtime)  # 第 3 次
+        assert mw._pending_warnings.get(_pending_key()), "无豁免后，第 3 次同参门禁命令必须告警"
+
+    def test_cumulative_state_is_bounded(self):
+        mw = LoopDetectionMiddleware(warn_threshold=100, hard_limit=100, cumulative_counting=True)
+        runtime = _make_runtime(task_id="task-a")
+        for i in range(_MAX_CUMULATIVE_HASHES + 50):
+            mw._apply(_make_state(tool_calls=[_bash_call(f"cmd_{i}")]), runtime)
+        for counts in mw._cumulative.values():
+            assert len(counts) <= _MAX_CUMULATIVE_HASHES
+
+    def test_reset_clears_cumulative_state(self):
+        mw = LoopDetectionMiddleware(warn_threshold=2, cumulative_counting=True)
+        runtime = _make_runtime(task_id="task-a")
+        call = [_bash_call("ls")]
+        mw._apply(_make_state(tool_calls=call), runtime)
+        mw.reset()
+        assert not mw._cumulative
+        mw._apply(_make_state(tool_calls=call), runtime)
+        assert not mw._pending_warnings.get(_pending_key())
+
+    def test_from_config_carries_cumulative_flag(self):
+        config = LoopDetectionConfig(cumulative_counting=True)
+        assert LoopDetectionMiddleware.from_config(config).cumulative_counting is True
+        # 显式覆盖：子代理链按 subagents.loop_detection 开启累计，而 lead 用全局默认
+        assert LoopDetectionMiddleware.from_config(LoopDetectionConfig(), cumulative_counting=True).cumulative_counting is True
+
+
+class TestBashCommandMutates:
+    """写形态判定:通用 Unix 知识,不含任何业务 skill 文件名。"""
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            # 观测到的复检命令 -- 只读
+            ("sha256sum /w/j.json | cut -c1-12", False),
+            ("python3 /mnt/skills/custom/criteria-parser/scripts/check_track_structure.py --track EX", False),
+            ("grep -n foo bar.md", False),
+            ("cat foo | grep x", False),
+            ("ls -la /w", False),
+            # 描述符复制不是文件写
+            ("grep foo bar 2>&1", False),
+            ("cmd > /dev/null 2>&1", False),
+            # 写形态:重定向
+            ("echo hi > /tmp/f", True),
+            ("echo hi >> /tmp/f", True),
+            ("python3 x.py > /tmp/out.log", True),
+            # 写形态:变更原语(token 级匹配,子串不算)
+            ("rm -rf /tmp/x", True),
+            ("mv a b", True),
+            ("cp a b", True),
+            ("mkdir d", True),
+            ("tee /tmp/f", True),
+            ("chmod +x x.sh", True),
+            # sed 只有 -i 才写
+            ("sed s/a/b/ f", False),
+            ("sed -i s/a/b/ f", True),
+            # 子串陷阱:permit/firms 不是 rm
+            ("permit user", False),
+            ("firms list", False),
+        ],
+    )
+    def test_classification(self, command, expected):
+        from deerflow.agents.middlewares.loop_detection_middleware import _bash_command_mutates
+
+        assert _bash_command_mutates(command) is expected
+
+
+def _patch_call(i: int) -> dict:
+    """第 i 批 apply_json_patches -- 每批不同的 patch(内容敏感哈希,彼此不同)。"""
+    return {
+        "name": "apply_json_patches",
+        "id": f"call_p{i}",
+        "args": {
+            "path": "/w/j.json",
+            "expected_hash": f"h{i}",
+            "patches": [{"pointer": f"/items/{i}/conclusion", "op": "replace", "value": "v"}],
+        },
+    }
+
+
+def _read_call(path="/w/a.py", start=None, end=None) -> dict:
+    args = {"path": path}
+    if start is not None:
+        args["start_line"] = start
+    if end is not None:
+        args["end_line"] = end
+    return {"name": "read_file", "id": "call_read", "args": args}
+
+
+class TestMutationAwareReset:
+    """mutation_reset:改判/修订循环里「改动后的复检」不是死循环证据。
+
+    会话 98d27624 的 8 次误杀全部是同一形状:重复调用之间夹着 apply_json_patches
+    (sha256sum -> patch -> 闸 -> sha256sum 是 criteria-repair.md 的规定节奏)。
+    重置语义只认「别的调用动过世界」,自己造成的 bump 不算 -- 否则 rm -rf x5
+    这种变更命令死循环会被自己的 bump 洗掉。
+    """
+
+    DIGEST = "sha256sum /mnt/user-data/workspace/criteria_parsed_EX.json | cut -c1-12"
+    GATE = "python3 /mnt/skills/custom/criteria-parser/scripts/check_track_structure.py --track EX"
+
+    def test_digest_recheck_after_each_patch_does_not_warn(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime(task_id="t")
+        for i in range(4):
+            assert mw._apply(_make_state(tool_calls=[_bash_call(self.DIGEST)]), runtime) is None
+            assert mw._apply(_make_state(tool_calls=[_patch_call(i)]), runtime) is None
+        assert not mw._pending_warnings.get(_pending_key())
+
+    def test_gate_rerun_after_each_patch_does_not_warn(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime(task_id="t")
+        for i in range(4):
+            assert mw._apply(_make_state(tool_calls=[_bash_call(self.GATE)]), runtime) is None
+            assert mw._apply(_make_state(tool_calls=[_patch_call(i)]), runtime) is None
+        assert not mw._pending_warnings.get(_pending_key())
+
+    def test_window_mode_reset(self):
+        """滑窗模式下重置走「清窗口历史」路径。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, mutation_reset=True)
+        runtime = _make_runtime()
+        for i in range(4):
+            assert mw._apply(_make_state(tool_calls=[_bash_call(self.DIGEST)]), runtime) is None
+            assert mw._apply(_make_state(tool_calls=[_patch_call(i)]), runtime) is None
+        assert not mw._pending_warnings.get(_pending_key())
+
+    def test_readonly_repeat_without_mutation_still_warns(self):
+        """无变更的相同只读命令照常告警 -- P0 语义不变。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime()
+        call = [_bash_call(self.DIGEST)]
+        for _ in range(2):
+            mw._apply(_make_state(tool_calls=call), runtime)
+        assert not mw._pending_warnings.get(_pending_key())
+        mw._apply(_make_state(tool_calls=call), runtime)  # 第 3 次
+        assert mw._pending_warnings.get(_pending_key())
+
+    def test_unknown_command_repeat_still_warns(self):
+        """python3 脚本属「不可分类」-> 不判为写 -> 重跑照常计数(保守方向保检测力)。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime()
+        call = [_bash_call(self.GATE)]
+        for _ in range(2):
+            mw._apply(_make_state(tool_calls=call), runtime)
+        mw._apply(_make_state(tool_calls=call), runtime)
+        assert mw._pending_warnings.get(_pending_key())
+
+    def test_alternating_readonly_verify_pair_still_warns(self):
+        """sha; 闸; sha; 闸; sha -- 两者都只读、互不 bump,必须告警。
+
+        这是 bash 不能整体判为写形态的原因:否则一条「验证对」死循环会被互相洗掉。
+        """
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime()
+        for _ in range(2):
+            mw._apply(_make_state(tool_calls=[_bash_call(self.DIGEST)]), runtime)
+            mw._apply(_make_state(tool_calls=[_bash_call(self.GATE)]), runtime)
+        mw._apply(_make_state(tool_calls=[_bash_call(self.DIGEST)]), runtime)
+        assert mw._pending_warnings.get(_pending_key())
+
+    def test_mutating_loop_still_hard_stops(self):
+        """自排除:rm 自己的 bump 不得重置自己的计数器。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime()
+        call = [_bash_call("rm -rf /tmp/x")]
+        result = None
+        for _ in range(4):
+            result = mw._apply(_make_state(tool_calls=call), runtime)
+        assert mw._pending_warnings.get(_pending_key())  # 第 3 次已告警
+        result = mw._apply(_make_state(tool_calls=call), runtime)  # 第 5 次
+        assert result is not None
+        assert result["messages"][0].tool_calls == []
+
+    def test_redirect_writer_loop_still_hard_stops(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime()
+        call = [_bash_call("echo hi > /tmp/f")]
+        for _ in range(4):
+            mw._apply(_make_state(tool_calls=call), runtime)
+        result = mw._apply(_make_state(tool_calls=call), runtime)
+        assert result is not None
+        assert result["messages"][0].tool_calls == []
+
+    def test_identical_write_loop_still_warns(self):
+        """read; write(同内容); read; write... -- 读被重置,但写哈希不变照常累计。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime()
+        write = [{"name": "write_file", "id": "call_w", "args": {"path": "/w/a.py", "content": "same"}}]
+        for _ in range(2):
+            mw._apply(_make_state(tool_calls=[_read_call()]), runtime)
+            mw._apply(_make_state(tool_calls=write), runtime)
+        assert not mw._pending_warnings.get(_pending_key())
+        mw._apply(_make_state(tool_calls=[_read_call()]), runtime)
+        mw._apply(_make_state(tool_calls=write), runtime)  # 第 3 次同参写
+        assert mw._pending_warnings.get(_pending_key())
+
+    def test_reset_budget_bounds_alternating_writers(self):
+        """两个写命令互相 bump(A写; B写; A写; ...) -- 预算耗尽后必须恢复检测。"""
+        mw = LoopDetectionMiddleware(
+            warn_threshold=3,
+            hard_limit=5,
+            cumulative_counting=True,
+            mutation_reset=True,
+            mutation_reset_budget=2,
+        )
+        runtime = _make_runtime()
+        a = [_bash_call("echo a > /tmp/a")]
+        b = [_bash_call("echo b > /tmp/b")]
+        # A 出现序列:occ1=1, occ2/occ3 重置, occ4=2, occ5=3 -> 告警
+        for _ in range(4):
+            mw._apply(_make_state(tool_calls=a), runtime)
+            mw._apply(_make_state(tool_calls=b), runtime)
+        assert not mw._pending_warnings.get(_pending_key())
+        mw._apply(_make_state(tool_calls=a), runtime)  # 第 5 次
+        assert mw._pending_warnings.get(_pending_key())
+
+    def test_reset_clears_warned_so_new_loop_can_warn_again(self, caplog):
+        """告警过 -> 改动 -> 又开始真循环:必须能再次告警,而不是被 _warned 记忆吞掉。"""
+        import logging
+
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime()
+        call = [_bash_call(self.DIGEST)]
+        with caplog.at_level(logging.WARNING, logger="deerflow.agents.middlewares.loop_detection_middleware"):
+            for _ in range(3):  # 真循环 -> 第 3 次告警
+                mw._apply(_make_state(tool_calls=call), runtime)
+            assert len([r for r in caplog.records if "Repetitive tool calls" in r.message]) == 1
+
+            mw._apply(_make_state(tool_calls=[_patch_call(0)]), runtime)  # 世界变了
+            for _ in range(2):  # 只有第一次复检免费:count 1 -> 2,不告警
+                mw._apply(_make_state(tool_calls=call), runtime)
+            assert len([r for r in caplog.records if "Repetitive tool calls" in r.message]) == 1
+
+            mw._apply(_make_state(tool_calls=[_patch_call(1)]), runtime)
+            for _ in range(2):
+                mw._apply(_make_state(tool_calls=call), runtime)
+            mw._apply(_make_state(tool_calls=call), runtime)  # 重置后的第 3 次
+            assert len([r for r in caplog.records if "Repetitive tool calls" in r.message]) == 2
+
+    def test_off_by_default(self):
+        """默认关闭:lead agent 行为与历史一致(改动间有写也照样计数)。"""
+        assert LoopDetectionMiddleware().mutation_reset is False
+        assert LoopDetectionConfig().mutation_reset is False
+
+        mw = LoopDetectionMiddleware(warn_threshold=3, hard_limit=5, cumulative_counting=True)
+        runtime = _make_runtime()
+        for i in range(3):
+            mw._apply(_make_state(tool_calls=[_bash_call(self.DIGEST)]), runtime)
+            mw._apply(_make_state(tool_calls=[_patch_call(i)]), runtime)
+        assert mw._pending_warnings.get(_pending_key()), "关闭重置时,第 3 次相同命令必须告警"
+
+    def test_from_config_override(self):
+        assert LoopDetectionMiddleware.from_config(LoopDetectionConfig(), mutation_reset=True).mutation_reset is True
+        assert LoopDetectionMiddleware.from_config(LoopDetectionConfig(mutation_reset=True)).mutation_reset is True
+        # 预算取全局配置
+        mw = LoopDetectionMiddleware.from_config(LoopDetectionConfig(mutation_reset_budget=3))
+        assert mw.mutation_reset_budget == 3
+
+    def test_reset_clears_mutation_state(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, cumulative_counting=True, mutation_reset=True)
+        runtime = _make_runtime(task_id="t")
+        mw._apply(_make_state(tool_calls=[_bash_call(self.DIGEST)]), runtime)
+        mw._apply(_make_state(tool_calls=[_patch_call(0)]), runtime)
+        assert mw._mut_state and mw._mutation_epoch
+        mw.reset()
+        assert not mw._mut_state and not mw._mutation_epoch
+
+
+class TestReadFileExactRangeKey:
+    """read_file 键从 200 行分桶改为精确区间。
+
+    会话 98d27624 里 2 次误杀是分桶折叠:[90-115]/[1-120]/[1-140] 三个不同意图
+    的分页读落进同一个桶。分桶原本容忍的「文件改了之后的近似重读」已由
+    mutation_reset 接管(写过就重置),桶只剩纯害。
+    """
+
+    def test_distinct_ranges_are_distinct_keys(self):
+        a = _hash_tool_calls([_read_call(start=90, end=115)])
+        b = _hash_tool_calls([_read_call(start=1, end=120)])
+        c = _hash_tool_calls([_read_call(start=1, end=140)])
+        assert len({a, b, c}) == 3
+
+    def test_same_range_same_key(self):
+        a = _hash_tool_calls([_read_call(start=1, end=220)])
+        b = _hash_tool_calls([_read_call(start=1, end=220)])
+        assert a == b
+
+    def test_drifting_range_is_distinct_but_layer2_backstops(self):
+        """[1-100] -> [1-101] 漂移读逃过 Layer 1 是设计使然,由频次层兜底。"""
+        a = _hash_tool_calls([_read_call(start=1, end=100)])
+        b = _hash_tool_calls([_read_call(start=1, end=101)])
+        assert a != b
+
+    def test_distinct_ranges_do_not_warn_without_mutation(self):
+        """无变更区间里三次不同分页读不再折叠告警(EU0OLUHa 形态)。"""
+        mw = LoopDetectionMiddleware(warn_threshold=3, cumulative_counting=True)
+        runtime = _make_runtime()
+        for start, end in ((90, 115), (1, 120), (1, 140)):
+            assert mw._apply(_make_state(tool_calls=[_read_call(start=start, end=end)]), runtime) is None
+        assert not mw._pending_warnings.get(_pending_key())
+
+    def test_identical_range_repeat_still_warns(self):
+        mw = LoopDetectionMiddleware(warn_threshold=3, cumulative_counting=True)
+        runtime = _make_runtime()
+        call = [_read_call(start=1, end=100)]
+        for _ in range(2):
+            mw._apply(_make_state(tool_calls=call), runtime)
+        mw._apply(_make_state(tool_calls=call), runtime)
+        assert mw._pending_warnings.get(_pending_key())

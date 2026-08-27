@@ -244,6 +244,15 @@ models:
   #         type: disabled
 
   # Example: DeepSeek model (with thinking support)
+  #
+  # On a DeepSeek-native endpoint (api.deepseek.com), `supports_reasoning_effort: true`
+  # additionally activates a provider-specific remap of the UI's four depth levels:
+  # minimal->minimal, low->low, medium->high, high->max. DeepSeek folds medium/high/xhigh
+  # onto a single internal budget, so without the remap the UI's top two levels would be
+  # indistinguishable while `max` stayed unreachable. Note that the top level then costs
+  # more and runs slower than `high`. See backend/docs/CONFIGURATION.md and
+  # https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+  #
   # - name: deepseek-v3
   #   display_name: DeepSeek V3 (Thinking)
   #   use: deerflow.models.patched_deepseek:PatchedChatDeepSeek
@@ -253,6 +262,7 @@ models:
   #   max_retries: 2
   #   max_tokens: 8192
   #   supports_thinking: true
+  #   supports_reasoning_effort: true
   #   supports_vision: false  # DeepSeek V3 does not support vision
   #   when_thinking_enabled:
   #     extra_body:
@@ -920,6 +930,24 @@ loop_detection:
   #     warn: 150
   #     hard_limit: 300
 
+  # REMOVED (2026-08-19): verification_warn_threshold / verification_hard_limit /
+  # verification_patterns no longer exist. The exemption hardcoded gitignored
+  # skills/custom/ gate-script filenames into the publishable harness package and a
+  # bare substring match could be chained to bypass it (`rm -rf X; sha256sum /a`
+  # counted as verification). The correct fix for those false positives is the
+  # mutation-aware reset below - an identical re-check after a write is a re-check,
+  # not a loop - not a whitelist.
+
+  # Mutation-aware reset: restart a call set's repeat counter when a DIFFERENT
+  # call set mutated state since its last occurrence (write_file / str_replace /
+  # apply_json_patches / a write-shaped bash command: redirects, mv/cp/rm/...).
+  # Off by default here so the lead agent keeps its historical semantics; the
+  # subagent chain turns it on (subagents.loop_detection.mutation_reset, default
+  # true). The reset ignores bumps the call set itself caused (rm -rf x5 still
+  # hard-stops) and each hash may consume at most mutation_reset_budget resets.
+  # mutation_reset: false
+  # mutation_reset_budget: 8
+
 # ============================================================================
 # Read-Before-Write File Gate (issue #3857)
 # ============================================================================
@@ -930,6 +958,104 @@ loop_detection:
 
 read_before_write:
   enabled: true
+
+# ============================================================================
+# Version-Aware read_file Deduplication
+# ============================================================================
+# On a REPEAT read_file of the same (path, line range) whose content hash has not
+# changed, return a short reference instead of the file body. Aimed at long
+# multi-agent tasks where the same SKILL.md / JSON gets re-read whole on many
+# turns: one measured run externalised 147 read payloads carrying only 62 distinct
+# content hashes — 63.6% of those bytes were byte-identical re-reads.
+#
+# DISABLED BY DEFAULT. Substituting a reference for file content changes what the
+# model sees, so enable it deliberately after comparing a replay, not as part of an
+# upgrade.
+#
+# The cache key includes the content hash, so any modification is a natural miss;
+# writes additionally drop that file's entries. Entries are never shared across
+# sandbox, thread, or run. The first read, reads shorter than min_chars, non-read
+# tools, and error results are never deduplicated.
+
+read_file_dedup:
+  # Returns a short reference instead of a byte-identical re-read of the same file within a
+  # run. Off by default because it changes what the model sees, not because it is unfinished.
+  #
+  # Before turning this on, know what makes it safe: the cache key includes the content hash
+  # (so any edit is a natural miss), the file's entries are dropped on every write, and it
+  # includes `task_id` — without that last one a subagent's FIRST read of a file returns
+  # "you already read this" for a payload that is not in its isolated transcript and cannot
+  # be retrieved, which starves exactly the subagents the dedup was meant to speed up.
+  enabled: false
+  # Bounded cache; oldest entries evicted first.
+  max_entries: 5000
+  # Only dedupe reads at least this large — for short reads the indirection costs
+  # more than the payload it saves.
+  min_chars: 2000
+
+# ----------------------------------------------------------------------------
+# Whole-file re-read policy (read_file)
+# ----------------------------------------------------------------------------
+# Bounds repeated WHOLE-file reads of large files inside a single task. This is the case
+# read_file_dedup structurally cannot catch: dedup keys on (path, range, content hash), so
+# "read it whole, read it whole again, then read ranges" produces a new key nearly every
+# time and every payload looks new to the cache.
+#
+# The cost is not one read's bytes — it is that each read is re-inherited by every later
+# turn in that task. Measured on one judgment task: the same 7,604-line file read whole 6
+# times, 10 whole-file reads overall, input tokens reaching 1.66x the compaction trigger,
+# four compactions inside a single task, after which the subagent lost its working state
+# and rewrote its own goal.
+#
+# Off by default: it turns a successful read into an error. Start with mode: warn to
+# measure, then switch to block.
+read_file_policy:
+  enabled: false
+  # block = refuse the repeat whole-file read and name the cheaper alternative
+  #         (grep for line numbers, then read_file with start_line/end_line).
+  # warn  = return the content and append the same guidance.
+  mode: block
+  # Only files whose first whole read was at least this many lines are governed. Blocking
+  # small files would add a turn without saving context.
+  min_lines_for_ranged: 1500
+  # Bounded per-(task, path) bookkeeping; oldest entries evicted first.
+  max_entries: 5000
+
+# ----------------------------------------------------------------------------
+# Inline-bash artifact-write policy (bash)
+# ----------------------------------------------------------------------------
+# Structured artifacts (.json by default) may only be written by write_file (first write)
+# or apply_json_patches (edits). Those put the payload in the transcript, are covered by
+# the read-before-write gate, and apply_json_patches validates the document. An inline
+# `python3 -c` or heredoc that rewrites the same file bypasses all three — and a model
+# reaches for it exactly when the artifact is already broken, i.e. when an unobservable
+# rewrite is most dangerous.
+#
+# Lives here rather than in the sandbox bash validators because those run only for the
+# local sandbox; AIO/container deployments would otherwise be uncovered.
+#
+# Detection is intentionally narrow — inline authorship (or a redirection) AND a governed
+# artifact path AND a real write intent must all be present:
+#   blocked : python3 -c / heredoc writing a .json, `> x.json`, `tee x.json`, `sed -i ... x.json`
+#   allowed : python3 <script>.py --out x.json  (skill scripts: the main path)
+#             sha256sum x.json, grep/ls, python3 -c "json.load(open(...))"  (read-only)
+#             /tmp/*.json and other paths outside governed_prefix
+# Widening any of the three conditions would block the main path.
+bash_write_policy:
+  enabled: false
+  # block = refuse the command and name the right tool; warn = run it and append guidance.
+  mode: block
+  blocked_suffixes:
+    - .json
+  # Only artifacts under this prefix (plus relative paths, since the sandbox working
+  # directory lives under it) are governed.
+  governed_prefix: /mnt/user-data/
+
+# Search-result deduplication is declared but NOT implemented. It is listed here so
+# the key validates instead of being silently dropped, which is how an earlier
+# placeholder survived in a local config while a changelog claimed it was working.
+search_dedup:
+  enabled: false
 
 # ============================================================================
 # Provider Safety Termination Configuration
@@ -1095,6 +1221,65 @@ sandbox:
 #   # Built-in defaults: general-purpose=150, bash=60. Leave unset to keep them.
 #   # max_turns: 120
 #
+#   # ── Subagent runtime guards (all OFF by default) ────────────────────────
+#   # The lead agent has had loop detection, summarization and a token budget from
+#   # the start; the subagent chain had none of them. That is how a single judgment
+#   # task reached 6.36M tokens over 83 steps: nobody compacted its context, capped
+#   # its spend, or broke its 12th identical gate-script call. Turn these on ONE AT
+#   # A TIME and re-measure — enabling all three at once makes the result
+#   # unattributable.
+#   #
+#   # loop_detection:
+#   #   enabled: true
+#   #   # Count identical tool-call sets cumulatively instead of only inside the
+#   #   # sliding window. Keep true for subagents: their repeats are interleaved
+#   #   # with reads/greps, so the 20-call window evicts the hash before the
+#   #   # counter can reach the limit. Thresholds come from the top-level
+#   #   # `loop_detection` section.
+#   #   cumulative_counting: true
+#   #   # Restart a call set's repeat counter when a DIFFERENT call set mutated
+#   #   # state since its last occurrence (write_file / str_replace /
+#   #   # apply_json_patches / a write-shaped bash command). Keep true for
+#   #   # subagents: their fix->verify cycles re-issue identical commands
+#   #   # (sha256sum, gate scripts) after each mutation, and without this every
+#   #   # such cycle trips warn_threshold=3. The reset ignores bumps the call set
+#   #   # itself caused and is capped per hash by
+#   #   # loop_detection.mutation_reset_budget.
+#   #   mutation_reset: true
+#   #
+#   # Independent from the lead agent's `summarization` section on purpose: a
+#   # subagent is one long task, not a conversation, so it usually wants a much
+#   # looser trigger. Start wide and tighten with measurements — too tight and it
+#   # compacts away evidence the judgment still needs.
+#   # summarization:
+#   #   enabled: true
+#   #   trigger:
+#   #     - type: tokens
+#   #       value: 120000
+#   #   keep:
+#   #     type: tokens
+#   #     value: 60000
+#   #
+#   # Scoped PER TASK, not per run: keying on run_id would give all tasks of one
+#   # run a single shared allowance, so the first heavy task would eat it and every
+#   # later task would start already over budget. Hitting the limit strips
+#   # tool_calls, forcing a final answer from what was collected — a bounded
+#   # partial result instead of an unbounded burn.
+#   # token_budget:
+#   #   enabled: true
+#   #   max_tokens: 2000000
+#   #   max_input_tokens: 1500000
+#   #   warn_threshold: 0.7
+#   #   hard_stop_threshold: 0.9
+#   #
+#   # graceful_stop:
+#   #   # Whether `task` retries a subagent that failed by exhausting a resource
+#   #   # ceiling (recursion/max_turns, token budget). Keep false: re-running spends
+#   #   # the same allowance and fails the same way — exactly why timeouts have
+#   #   # never been retried. Session d393714d: a 6.36M-token failure was retried
+#   #   # for another 5.21M, both attempts hitting the same recursion limit.
+#   #   retry_resource_ceiling_failures: false
+#
 #   # Optional per-agent overrides (applies to both built-in and custom agents)
 #   agents:
 #     general-purpose:
@@ -1108,6 +1293,30 @@ sandbox:
 #       timeout_seconds: 300   # 5 minutes for quick command execution
 #       max_turns: 80
 #       # skills: []            # No skills for bash agent
+#
+#   # About `skills: []` — two consequences worth knowing before you set it:
+#   #  1. Token: skill bodies are re-inherited by EVERY AI turn of that subagent,
+#   #     not once per task. Five skills measured at 42,758 tokens cost ~16.2M
+#   #     tokens across 379 subagent turns in one long run.
+#   #     Note what `skills` unset actually means: NOT "the skills this workflow
+#   #     uses" but EVERY enabled skill in extensions_config.json. One run
+#   #     inherited all 33 (consulting-analysis, skill-creator, ppt-generation …,
+#   #     none related to the task) = 226,004 tokens of initial context. That is
+#   #     3.8x the 60k compaction trigger, so compaction fired BEFORE the first
+#   #     model call and traded the whole skill corpus for a 687-character
+#   #     summary — the task statement survived, the rules did not. Two subagents
+#   #     then spent 99 turns each re-reading files to reconstruct them, wrote
+#   #     nothing, and hit recursion_limit: 10.02M tokens, 42 minutes, zero output.
+#   #  2. Tools: a skill's `allowed-tools` declaration FILTERS the subagent's tool
+#   #     set (union across loaded skills). With no skills loaded nothing declares
+#   #     allowed-tools, so the filter is bypassed and tools that no skill listed
+#   #     (e.g. parse_document) become available again.
+#   # This key is keyed by SUBAGENT name and applies globally — there is no
+#   # per-parent-agent override, so check which agents delegate to that subagent
+#   # before setting it. Also keep the lead agent's skill allowlist unset:
+#   # a non-empty parent allowlist is intersected with the child's, and a parent
+#   # allowlist combined with child `null` makes the child inherit the parent's
+#   # list rather than all skills.
 #
 #   # Custom subagent types: define specialized agents with their own prompts,
 #   # tools, skills, and model configuration. Custom agents are available via
@@ -1220,7 +1429,9 @@ summarization:
     # Uncomment to also trigger when message count reaches 50
     # - type: messages
     #   value: 50
-    # Uncomment to trigger when 80% of model's max input tokens is reached
+    # Uncomment to trigger at 80% of the SUMMARIZATION model's max input tokens.
+    # ⚠️ Read the `fraction` warning under `keep` before enabling: `fraction` fails at
+    # startup unless the summarization model exposes a profile.
     # - type: fraction
     #   value: 0.8
 
@@ -1233,13 +1444,45 @@ summarization:
     # Alternative: Keep specific token count
     # type: tokens
     # value: 3000
-    # Alternative: Keep percentage of model's max input tokens
+    # Alternative: keep a fraction of the summarization model's max input tokens.
+    #
+    # ⚠️ `fraction` (in `keep` OR in `trigger`) has two sharp edges:
+    #
+    # 1. The denominator is the model named by `model_name` above — the SUMMARIZATION
+    #    model — not the agent's main model. LangChain reads the profile off the
+    #    summarizer, so `fraction` cannot express "a share of the main model's window".
+    # 2. It requires that model to expose `profile["max_input_tokens"]`. LangChain only
+    #    ships profile data for its own partner packages (e.g. langchain_openai);
+    #    third-party or custom providers (Anthropic-compatible gateways, DeepSeek, Qwen,
+    #    vLLM, ...) usually report `profile = None`. The check runs in the middleware
+    #    constructor, so a missing profile is a HARD STARTUP FAILURE, not a silent
+    #    fallback: the agent graph never builds and every run fails with
+    #      ValueError: Model profile information is required to use fractional token
+    #      limits, and is unavailable for the specified model.
+    #
+    # If your summarization model has no built-in profile, either use absolute `tokens`
+    # values (recommended) or declare the window yourself in the `models:` section:
+    #   - name: my-model
+    #     use: langchain_openai:ChatOpenAI
+    #     model: ...
+    #     profile:
+    #       max_input_tokens: 131072
     # type: fraction
     # value: 0.3
 
   # Maximum tokens to keep when preparing messages for summarization
   # Set to null to skip trimming (not recommended for very long conversations)
   trim_tokens_to_summarize: 15564
+
+  # Characters per token for the approximate counter behind `trigger` / `keep`.
+  # Unset (null) keeps LangChain's default of 4.0, which is calibrated for English.
+  # A CJK-heavy conversation reads far smaller than it bills — measured 1.65
+  # chars/token over this repo's own Chinese skill corpus, i.e. the default counter
+  # under-reports by ~2.4x — and LangChain's usage-metadata correction is clamped at
+  # 1.25x, so a token `trigger` can end up unreachable and summarization never runs.
+  # Set this to the measured ratio of your own corpus so `trigger`/`keep` mean real
+  # tokens. Measure with: len(text) / len(tiktoken.get_encoding("o200k_base").encode(text))
+  chars_per_token: null
 
   # Custom summary prompt template (null = use default LangChain prompt)
   # The prompt should guide the model to extract important context
@@ -1258,6 +1501,23 @@ summarization:
     - read
     - view
     - cat
+
+  # Hand the compaction summary back to a SUBAGENT as a hidden
+  # <task_progress_summary> block at model-call time.
+  #
+  # Why this exists: compaction parks its summary in state["summary_text"] rather than
+  # inserting it into messages, and the only renderer of that channel is
+  # DurableContextMiddleware — which is attached to the lead agent only. The subagent
+  # middleware chain has no such consumer, so for a subagent compaction was a net
+  # deletion: messages removed, replacement summary written to a channel nobody read.
+  # A subagent that loses its accumulated working state mid-task tends to re-derive a
+  # *different* goal from whatever context survives.
+  #
+  # Defaults to true, unlike the other subagent guards which are opt-in: turning it off
+  # does not disable a feature, it restores silent context loss. Set false only to roll
+  # back. Injection uses wrap_model_call, so it adds no graph node and does not change
+  # the recursion_limit-to-turn ratio.
+  inject_summary_message: true
 
 # ============================================================================
 # Memory Configuration

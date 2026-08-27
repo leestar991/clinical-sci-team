@@ -64,6 +64,51 @@ class _BoundedPipeCapture:
         return output
 
 
+#: Extensions written verbatim, because their content is *data*: a container path inside
+#: one is a value the reader is meant to see unchanged.
+#:
+#: One rewrite rule cannot serve both kinds of file. A ``.py`` doing
+#: ``open("/mnt/user-data/workspace/x.json")`` must have that path translated or it cannot
+#: run. A ``.md`` or ``.json`` carrying ``/mnt/user-data/...`` as a value must not: in
+#: session ``a7c19ea1`` the OCR provenance line
+#: ``（来源图片：/mnt/user-data/workspace/images/...）`` was rewritten to the host path on
+#: every write, which made all 39 pages non-portable — the tool that writes it documents
+#: "Virtual path only. Host absolute paths break on any other deployment" — and sent the
+#: agent into a fix loop it could not win (12.5 min, 1.59M tokens, no progress).
+#:
+#: An allowlist rather than the inverse: unrecognised and extension-less files keep the
+#: historical translate behaviour, since a shell script often has no extension and shipping
+#: an untranslated script fails at an unrelated place later, while writing a data file
+#: through translation is at least visible and recoverable.
+_DATA_CONTENT_EXTENSIONS = frozenset(
+    {
+        ".csv",
+        ".htm",
+        ".html",
+        ".json",
+        ".jsonl",
+        ".log",
+        ".markdown",
+        ".md",
+        ".ndjson",
+        ".rst",
+        ".tsv",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
+
+
+def _content_is_executable(path: str) -> bool:
+    """Whether *path*'s content should have container paths resolved to host paths."""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if "." not in name.lstrip("."):
+        return True
+    return f".{name.rsplit('.', 1)[-1].lower()}" not in _DATA_CONTENT_EXTENSIONS
+
+
 @dataclass(frozen=True)
 class PathMapping:
     """A path mapping from a container path to a local path with optional read-only flag."""
@@ -615,16 +660,41 @@ class LocalSandbox(Sandbox):
         try:
             with open(resolved_path, encoding="utf-8") as f:
                 content = f.read()
-            # Only reverse-resolve paths in files that were previously written
-            # by write_file (agent-authored content). User-uploaded files,
-            # external tool output, and other non-agent content should not be
-            # silently rewritten — see discussion on PR #1935.
-            if resolved_path in self._agent_written_paths:
+            # Reverse-resolve by *location*, not by authorship. PR #1935 keyed this on
+            # ``_agent_written_paths`` so user uploads were never rewritten, but "who wrote
+            # it" is the wrong axis and it produced an asymmetry the agent cannot escape:
+            # a file written by a tool (not write_file) kept its host paths on read, while
+            # write_file translated /mnt -> host on the way in. Session ``a7c19ea1`` lost
+            # 12.5 minutes and 1.59M tokens to exactly that. ``parse_image_batch`` wrote OCR
+            # provenance lines through the sandbox; every later attempt to normalise them
+            # was verified with ``read_file`` (which showed /mnt, looking fixed) and with
+            # ``bash grep`` (which showed /Users, looking broken). 17 consecutive lead turns
+            # could not converge because both observations were correct and contradictory.
+            # Uploads stay untouched — that is the case #1935 actually protected, and it is
+            # a property of the directory, not of the writer.
+            if not self._is_under_uploads(resolved_path):
                 content = self._reverse_resolve_paths_in_output(content)
             return content
         except OSError as e:
             # Re-raise with the original path for clearer error messages, hiding internal resolved paths
             raise type(e)(e.errno, e.strerror, path) from None
+
+    def _is_under_uploads(self, resolved_path: str) -> bool:
+        """Whether *resolved_path* sits in a mapped uploads directory.
+
+        Uploads hold user-provided files that must be reported exactly as they are: a PDF
+        or a spreadsheet the user supplied is evidence, and silently rewriting text inside
+        it would misreport the source (PR #1935). Matching is on the resolved host path so
+        it holds however the caller spelled the virtual path.
+        """
+        normalised = resolved_path.replace("\\", "/")
+        for mapping in self.path_mappings:
+            if not mapping.container_path.replace("\\", "/").rstrip("/").endswith("/uploads"):
+                continue
+            root = self._resolved_local_paths[mapping].replace("\\", "/").rstrip("/")
+            if normalised == root or normalised.startswith(f"{root}/"):
+                return True
+        return False
 
     def download_file(self, path: str, *, max_bytes: int | None = None) -> bytes:
         normalised = path.replace("\\", "/")
@@ -658,15 +728,15 @@ class LocalSandbox(Sandbox):
             dir_path = os.path.dirname(resolved_path)
             if dir_path:
                 os.makedirs(dir_path, exist_ok=True)
-            # Resolve container paths in content to local paths
-            # using the content-specific resolver (forward-slash safe)
-            resolved_content = self._resolve_paths_in_content(content)
+            # Container paths in *executable* content are resolved to local paths so a
+            # script the agent writes can actually run on the host. Data files are written
+            # verbatim — see _content_is_executable for why the distinction matters.
+            resolved_content = self._resolve_paths_in_content(content) if _content_is_executable(resolved_path) else content
             mode = "a" if append else "w"
             with open(resolved_path, mode, encoding="utf-8") as f:
                 f.write(resolved_content)
-            # Track this path so read_file knows to reverse-resolve on read.
-            # Only agent-written files get reverse-resolved; user uploads and
-            # external tool output are left untouched.
+            # Retained for diagnostics only: read_file's reverse resolution is no longer
+            # conditioned on who wrote the file (see read_file).
             self._agent_written_paths.add(resolved_path)
         except OSError as e:
             # Re-raise with the original path for clearer error messages, hiding internal resolved paths

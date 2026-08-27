@@ -47,6 +47,15 @@ class SummarizationConfig(BaseModel):
         default=4000,
         description="Maximum tokens to keep when preparing messages for summarization. Pass null to skip trimming.",
     )
+    chars_per_token: float | None = Field(
+        default=None,
+        description="Characters per token for the approximate token counter used by `trigger` / `keep`. "
+        "None keeps LangChain's default of 4.0, which is calibrated for English: it under-reports "
+        "CJK-heavy histories by ~2.4x (measured 1.65 chars/token over this repo's Chinese skill corpus), "
+        "and LangChain's usage-metadata rescaling is clamped at 1.25x — so a token `trigger` can never "
+        "be reached. Set it to the measured ratio of your corpus to make `trigger`/`keep` mean real tokens.",
+        gt=0,
+    )
     summary_prompt: str | None = Field(
         default=None,
         description="Custom prompt template for generating summaries. If not provided, uses the default LangChain prompt.",
@@ -54,6 +63,16 @@ class SummarizationConfig(BaseModel):
     skill_file_read_tool_names: list[str] = Field(
         default_factory=lambda: ["read_file", "read", "view", "cat"],
         description="Tool names treated as skill-file reads when capturing loaded skills into the durable skill_context channel.",
+    )
+    inject_summary_message: bool = Field(
+        default=True,
+        description="Hand the compaction summary back to a SUBAGENT at model-call time as a hidden "
+        "<task_progress_summary> block. Only affects subagents: the lead agent's summary_text is already "
+        "rendered by DurableContextMiddleware, which is not part of the subagent middleware chain. "
+        "Defaults to true — unlike the other subagent guards, which are opt-in — because without it a "
+        "subagent's compaction deletes messages and writes the replacement summary to a channel nobody "
+        "reads, i.e. turning it off preserves a data-loss bug rather than merely disabling a feature. "
+        "Set false only to roll back.",
     )
 
 

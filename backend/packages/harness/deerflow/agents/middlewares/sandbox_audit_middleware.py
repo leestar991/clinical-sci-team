@@ -278,12 +278,27 @@ class SandboxAuditMiddleware(AgentMiddleware[ThreadState]):
     # attack string.
     _MAX_COMMAND_LENGTH = 10_000
 
+    # The one legitimate way to hit the cap is writing file content through a
+    # heredoc, so the rejection has to name the alternative rather than just say
+    # "no". Observed without it (thread `dfbb4554`): the model hit the cap three
+    # times in a row and then built its own generator script to work around it,
+    # producing a judgment file with hand-rolled, off-contract schema.
+    _OVERSIZED_COMMAND_HINT = (
+        "command too long ({actual} chars, limit {limit}). This cap exists to stop payload "
+        "injection, not to be worked around — do NOT split the same payload across several "
+        "commands, and do NOT write a generator script to emit the content. "
+        "If you were writing file content via a heredoc, use the file tools instead: "
+        "`write_file` (first call append=False to create, then append=True for each further "
+        "section — the size cap does not apply to appends), `str_replace` for a surgical edit, "
+        "or `apply_json_patches` to apply several edits to one JSON file atomically in a single write."
+    )
+
     def _validate_input(self, command: str) -> str | None:
         """Return ``None`` if *command* is acceptable, else a rejection reason."""
         if not command.strip():
             return "empty command"
         if len(command) > self._MAX_COMMAND_LENGTH:
-            return "command too long"
+            return self._OVERSIZED_COMMAND_HINT.format(actual=len(command), limit=self._MAX_COMMAND_LENGTH)
         if "\x00" in command:
             return "null byte detected"
         return None

@@ -108,7 +108,9 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
                 blocked = self._check_write_gate(request)
                 if blocked is not None:
                     return blocked
-                return handler(request)
+                result = handler(request)
+                self._attach_read_mark(request, result)
+                return result
         if name in _READ_TOOLS:
             path = self._requested_path(request)
             if path is None:
@@ -139,7 +141,9 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
                 blocked = await asyncio.to_thread(self._check_write_gate, request)
                 if blocked is not None:
                     return blocked
-                return await handler(request)
+                result = await handler(request)
+                await asyncio.to_thread(self._attach_read_mark, request, result)
+                return result
             finally:
                 lock.release()
         if name in _READ_TOOLS:
@@ -235,23 +239,46 @@ class ReadBeforeWriteMiddleware(AgentMiddleware):
     # -- mark stamping ---------------------------------------------------
 
     def _attach_read_mark(self, request: ToolCallRequest, result: ToolMessage | Command) -> None:
+        """Stamp a version mark for *path* on the tool result.
+
+        Called after a successful ``read_file`` **and** after a successful write.
+        Marking writes is what keeps the gate off the model's back for files it
+        just produced itself: re-reading content you authored three steps ago has
+        no informational value, it only burns turns. Observed cost of not doing it
+        (thread `dfbb4554`): the model created a helper script with ``write_file``,
+        was blocked twice on its own file, had to ``read_file`` it back each time,
+        and eventually built a generator script that emitted an off-contract
+        judgment schema.
+
+        The hash is always re-read from the sandbox rather than taken from the
+        write payload, so a partial or transformed write marks what is actually on
+        disk. Failures never mark: an error ToolMessage returns early, and an
+        ``"Error: ..."`` read channel is treated as uninspectable.
+        """
         path = self._requested_path(request)
         if path is None:
             return
         message = self._extract_tool_message(result)
         if message is None or message.status == "error":
             return
+        content = message.content if isinstance(message.content, str) else ""
+        if content.startswith(_UNINSPECTABLE_CONTENT_PREFIX):
+            # Tools report failures as an "Error: ..." payload with status=None
+            # (e.g. write_file's own size/permission rejections). Marking here
+            # would let the next write pass against a version that never landed.
+            logger.debug("read-before-write mark skipped for %r: tool returned an error payload", path)
+            return
         try:
-            content = self._content_reader(request.runtime, path)
+            current = self._content_reader(request.runtime, path)
         except Exception:
             logger.debug("read-before-write mark skipped for %r: file not hashable", path, exc_info=True)
             return
-        if content.startswith(_UNINSPECTABLE_CONTENT_PREFIX):
+        if current.startswith(_UNINSPECTABLE_CONTENT_PREFIX):
             logger.debug("read-before-write mark skipped for %r: error-string read channel", path)
             return
         message.additional_kwargs[READ_MARK_KEY] = {
             "path": _normalize_mark_path(path),
-            "hash": _content_hash(content),
+            "hash": _content_hash(current),
         }
 
     @staticmethod

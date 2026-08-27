@@ -9,6 +9,10 @@ be unit-tested without the executor/graph.
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
+
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from deerflow.subagents.step_events import (
@@ -292,3 +296,42 @@ def test_run_event_ignores_non_task_chunks():
     assert subagent_run_event({"type": "something_else"}) is None
     assert subagent_run_event({"no_type": True}) is None
     assert subagent_run_event("not-a-dict") is None
+
+
+# ── created_at must be step time, not flush time (session ``a7c19ea1``) ─────────
+#
+# These records are not persisted one at a time: ``SubagentStepEventBuffer`` batches at
+# ``FLUSH_THRESHOLD=25``. With ``created_at`` omitted the store defaulted to insert time, so
+# every step in a batch shared the timestamp of whichever step filled the buffer — a
+# 127-step task collapsed onto 7 distinct second values. That makes per-step timing wrong
+# rather than coarse, and the only remaining source was ``gateway.log`` poll lines at 5s
+# resolution.
+
+
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        pytest.param({"type": "task_started", "task_id": "c1", "description": "d"}, id="start"),
+        pytest.param({"type": "task_running", "task_id": "c1", "message_index": 1, "message": {"type": "ai", "content": "x"}}, id="step"),
+        pytest.param({"type": "task_completed", "task_id": "c1", "result": "done"}, id="end"),
+        pytest.param({"type": "task_failed", "task_id": "c1", "error": "boom"}, id="failed"),
+        pytest.param({"type": "task_timed_out", "task_id": "c1", "error": "slow"}, id="timed_out"),
+        pytest.param({"type": "task_cancelled", "task_id": "c1"}, id="cancelled"),
+    ],
+)
+def test_every_record_carries_a_timezone_aware_created_at(chunk):
+    record = subagent_run_event(chunk)
+
+    created_at = record["created_at"]
+    parsed = datetime.fromisoformat(created_at)
+    assert parsed.tzinfo is not None, "a naive stamp would be compared against UTC rows"
+    assert abs((datetime.now(UTC) - parsed).total_seconds()) < 60
+
+
+def test_successive_steps_get_distinct_timestamps():
+    """The property the incident needed: two steps in one batch must be distinguishable."""
+    first = subagent_run_event({"type": "task_running", "task_id": "c1", "message_index": 1, "message": {"type": "ai", "content": "a"}})
+    time.sleep(0.01)
+    second = subagent_run_event({"type": "task_running", "task_id": "c1", "message_index": 2, "message": {"type": "ai", "content": "b"}})
+
+    assert first["created_at"] < second["created_at"]

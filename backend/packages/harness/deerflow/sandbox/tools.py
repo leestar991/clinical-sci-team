@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import posixpath
 import re
@@ -6,6 +7,7 @@ import shlex
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from langchain.tools import tool
 
@@ -33,6 +35,9 @@ _ABSOLUTE_PATH_PATTERN = re.compile(r"(?<![:\w])(?<!:/)/(?:[^\s\"'`;&|<>()]+)")
 _IDENTIFIER_BRACE_BLOCK_PATTERN = re.compile(r"\{([^{}]*)\}")
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _FILE_URL_PATTERN = re.compile(r"\bfile://\S+", re.IGNORECASE)
+# `$VAR` / `${VAR}` — used only to decide whether an "unsafe absolute path" rejection is
+# worth explaining as a possible unexpanded variable.
+_SHELL_VARIABLE_PATTERN = re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
 _URL_WITH_SCHEME_PATTERN = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 _URL_IN_COMMAND_PATTERN = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'`;&|<>()]+", re.IGNORECASE)
 _DOTDOT_PATH_SEGMENT_PATTERN = re.compile(r"(?:^|[/\\=])\.\.(?:$|[/\\])")
@@ -149,6 +154,36 @@ def _is_skills_path(path: str) -> bool:
     """Check if a path is under the skills container path."""
     skills_prefix = _get_skills_container_path()
     return path == skills_prefix or path.startswith(f"{skills_prefix}/")
+
+
+def _skills_write_hint(path: str) -> str:
+    """Point a rejected skills write at ``skill_manage``, when the skill is writable.
+
+    Session ``a7c19ea1``: the agent found a real bug in
+    ``/mnt/skills/custom/criteria-parser/scripts/criteria_qc_bundle.py`` and tried twice to
+    patch it with ``apply_json_patches``, getting only "Permission denied" both times. It
+    then reported the fix as blocked — while ``skill_manage(action="write_file")`` could
+    have written that exact file all along (it accepts any support path under the skill,
+    ``scripts/`` included, behind a security scan). The agent's own words were that
+    ``skill_manage patch`` "只作用于 SKILL.md", so the capability existed and was invisible.
+
+    Only ``custom/`` skills get the pointer: ``public/`` ones are genuinely read-only, and
+    sending an agent to create a custom copy of a built-in skill is its own failure mode.
+    """
+    prefix = f"{_get_skills_container_path()}/custom/"
+    if not path.startswith(prefix):
+        return " Built-in (public) skills are read-only."
+    remainder = path[len(prefix) :].strip("/")
+    if not remainder:
+        return ""
+    skill_name, _, support_path = remainder.partition("/")
+    target = support_path or "SKILL.md"
+    return (
+        f" Custom skills are writable through the skill_manage tool, not the file tools: "
+        f'skill_manage(action="write_file", name="{skill_name}", path="{target}", content=...) '
+        '— it applies a security scan and records an edit history. Use action="patch" for a '
+        "find/replace inside SKILL.md."
+    )
 
 
 def _resolve_skills_path(path: str) -> str:
@@ -411,6 +446,42 @@ def _format_glob_results(root_path: str, matches: list[str], truncated: bool) ->
     return "\n".join(lines)
 
 
+def _grep_single_file(
+    runtime: Runtime,
+    file_path: str,
+    pattern: str,
+    *,
+    literal: bool,
+    case_sensitive: bool,
+    max_results: int,
+) -> str:
+    """Run a ``grep`` whose ``path`` turned out to be a file, not a directory.
+
+    Implemented by searching the file's parent with a glob pinned to its name, so it reuses
+    the same sandbox ``grep`` path (and the same masking and truncation) instead of adding a
+    second content-matching implementation that could drift from it.
+
+    The note in front of the results is the point: a silent fix teaches nothing and the next
+    call repeats the mistake.
+    """
+    parent, _, filename = file_path.replace("\\", "/").rpartition("/")
+    if not parent or not filename:
+        return f"Error: Path is not a directory: {file_path}"
+    healed = grep_tool.func(
+        runtime,
+        f"grep inside the single file {filename}",
+        pattern,
+        parent,
+        filename,
+        literal,
+        case_sensitive,
+        max_results,
+    )
+    if isinstance(healed, str) and healed.startswith("Error:"):
+        return f"Error: Path is not a directory: {file_path}. `grep` takes a directory root — call it with path={parent!r} and glob={filename!r}, or use read_file for one file."
+    return f"[grep] path={file_path} is a file, not a directory; searched that one file (equivalent to path={parent!r}, glob={filename!r}).\n{healed}"
+
+
 def _format_grep_results(root_path: str, matches: list[GrepMatch], truncated: bool) -> str:
     if not matches:
         return f"No matches found under {root_path}"
@@ -666,10 +737,11 @@ def validate_local_tool_path(path: str, thread_data: ThreadDataState | None, *, 
 
     _reject_path_traversal(path)
 
-    # Skills paths — read-only access only
+    # Skills paths — read-only through the file tools. Custom skills ARE writable, but only
+    # via ``skill_manage`` (security scan + edit history), so say so instead of just refusing.
     if _is_skills_path(path):
         if not read_only:
-            raise PermissionError(f"Write access to skills path is not allowed: {path}")
+            raise PermissionError(f"Write access to skills path is not allowed: {path}{_skills_write_hint(path)}")
         return
 
     # ACP workspace paths — read-only access only
@@ -677,6 +749,19 @@ def validate_local_tool_path(path: str, thread_data: ThreadDataState | None, *, 
         if not read_only:
             raise PermissionError(f"Write access to ACP workspace is not allowed: {path}")
         return
+
+    # The bare virtual root is a UNION of three host directories in a local sandbox, so it
+    # cannot be resolved to one path. Checked BEFORE the prefix test so the trailing-slash
+    # form lands here too: it used to pass validation and then fail deep in path resolution
+    # as "path traversal detected", which is both alarming and wrong. An agent that cannot
+    # tell which part of its call is wrong retries it with cosmetic edits, so name the three
+    # concrete roots.
+    if path.rstrip("/") == VIRTUAL_PATH_PREFIX:
+        raise PermissionError(
+            f"{VIRTUAL_PATH_PREFIX} is not a single directory here — it is the union of "
+            f"{VIRTUAL_PATH_PREFIX}/workspace, {VIRTUAL_PATH_PREFIX}/uploads and {VIRTUAL_PATH_PREFIX}/outputs. "
+            "Pick one of those three as the root, or run the call once per root."
+        )
 
     # User-data paths
     if path.startswith(f"{VIRTUAL_PATH_PREFIX}/"):
@@ -754,6 +839,45 @@ def _non_file_url_spans(command: str) -> list[tuple[int, int]]:
 
 def _is_in_spans(position: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= position < end for start, end in spans)
+
+
+#: ``<<'EOF'`` / ``<<"EOF"`` (optionally ``<<-``). Only the *quoted* forms are matched:
+#: an unquoted ``<<EOF`` still expands ``$VAR`` and command substitutions, so its body can
+#: become a real host path at runtime and must stay under the guard.
+_QUOTED_HEREDOC_START_PATTERN = re.compile(r"<<-?\s*(?P<quote>['\"])(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)")
+
+
+def _quoted_heredoc_body_spans(command: str) -> list[tuple[int, int]]:
+    """Spans of quoted-heredoc bodies, which are literal text and not shell paths.
+
+    The absolute-path scan runs over the raw command string, so a ``/segment`` sequence
+    anywhere in an embedded script reads as a path candidate — including inside the Python
+    source of ``python3 << 'PYEOF' ... PYEOF``. Session ``a7c19ea1`` lost four turns to
+    this while already stuck in an unrelated loop: a ``re.sub`` pattern, a ``grep`` needle
+    and two dict keys were reported as ``Unsafe absolute paths in command: /Users/``,
+    ``/pid/``, ``/source`` — none of which the command would ever open.
+
+    A quoted delimiter is the precise signal that makes this safe to exempt: bash performs
+    no expansion inside it, so the body is exactly the bytes written and cannot resolve to
+    a host path the caller did not spell out. The unquoted form is deliberately left
+    enforced.
+
+    An unterminated heredoc extends to end of command — that is also how the shell reads
+    it, so nothing outside the body silently loses its check.
+    """
+    spans: list[tuple[int, int]] = []
+    for match in _QUOTED_HEREDOC_START_PATTERN.finditer(command):
+        body_start = command.find("\n", match.end())
+        if body_start == -1:
+            continue
+        body_start += 1
+        tag = match.group("tag")
+        end = len(command)
+        for line_match in re.finditer(rf"^[ \t]*{re.escape(tag)}[ \t]*$", command[body_start:], re.MULTILINE):
+            end = body_start + line_match.start()
+            break
+        spans.append((body_start, end))
+    return spans
 
 
 def _has_dotdot_path_segment(token: str) -> bool:
@@ -986,6 +1110,38 @@ def _is_non_path_literal_fragment(fragment: str) -> bool:
     return False
 
 
+def _is_shell_regex_literal_fragment(fragment: str, standalone_tokens: frozenset[str]) -> bool:
+    """Return True if a ``/segment`` match is a ``sed``/``awk`` regex body, not a path.
+
+    The absolute-path scan runs over the raw command string, so slash-delimited regex
+    bodies surface as path candidates. Session ``c2518bc7`` lost three consecutive AI
+    steps to exactly this: ``awk -F: 'NR>=5 && /^[0-9]+:/'`` and ``sed 's/．//'`` were
+    both rejected as "Unsafe absolute paths", an error the model cannot act on because
+    the command contains no host path at all.
+
+    Three shapes, each chosen because it cannot name a file a command would open:
+
+    * The segment starts with ``^`` — a regex anchor. No host path begins with ``/^``.
+    * Braces are unbalanced (``/{print``). Bash brace expansion requires a matching
+      ``}``, so an unbalanced brace is neither a path nor an expansion. Balanced
+      non-identifier braces (``/{etc,var}/passwd``) are deliberately left to
+      :func:`_braces_are_identifier_placeholders_only`, which keeps them blocked.
+    * The fragment is nothing but slashes — the tail of a ``s/x//`` replacement. This
+      one is exempt **only when it is not a standalone shell token**, so genuine root
+      targeting (``rm -rf //``) stays blocked while an embedded replacement body does
+      not trip the guard.
+
+    Best-effort, like the rest of :func:`validate_local_bash_command_paths`: none of
+    these shapes widens reach to a real host path.
+    """
+    body = fragment.lstrip("/")
+    if not body:
+        return fragment not in standalone_tokens
+    if body.startswith("^"):
+        return True
+    return ("{" in fragment or "}" in fragment) and fragment.count("{") != fragment.count("}")
+
+
 def validate_local_bash_command_paths(command: str, thread_data: ThreadDataState | None) -> None:
     """Validate absolute paths in local-sandbox bash commands.
 
@@ -1013,12 +1169,18 @@ def validate_local_bash_command_paths(command: str, thread_data: ThreadDataState
     allowed_paths = _get_mcp_allowed_paths()
     _validate_local_bash_shell_tokens(command, allowed_paths)
     url_spans = _non_file_url_spans(command)
+    # Literal text the shell will not expand: quoted-heredoc bodies. Treated exactly like
+    # URL spans — the scan skips matches inside them (see _quoted_heredoc_body_spans).
+    literal_spans = url_spans + _quoted_heredoc_body_spans(command)
+    standalone_tokens = frozenset(_split_shell_tokens(command))
 
     for match in _ABSOLUTE_PATH_PATTERN.finditer(command):
-        if _is_in_spans(match.start(), url_spans):
+        if _is_in_spans(match.start(), literal_spans):
             continue
         absolute_path = match.group()
         if _is_non_path_literal_fragment(absolute_path):
+            continue
+        if _is_shell_regex_literal_fragment(absolute_path, standalone_tokens):
             continue
         if _is_allowed_local_bash_absolute_path(absolute_path, allowed_paths, allow_system_paths=True):
             continue
@@ -1027,7 +1189,26 @@ def validate_local_bash_command_paths(command: str, thread_data: ThreadDataState
 
     if unsafe_paths:
         unsafe = ", ".join(sorted(dict.fromkeys(unsafe_paths)))
-        raise PermissionError(f"Unsafe absolute paths in command: {unsafe}. Use paths under {VIRTUAL_PATH_PREFIX}")
+        raise PermissionError(f"Unsafe absolute paths in command: {unsafe}. Use paths under {VIRTUAL_PATH_PREFIX}{_unexpanded_variable_hint(command, unsafe_paths)}")
+
+
+def _unexpanded_variable_hint(command: str, unsafe_paths: list[str]) -> str:
+    """Extra hint when the offending path looks like a variable that never expanded.
+
+    ``cd "$WORKSPACE/out"`` with ``WORKSPACE`` unset becomes ``cd "/out"`` — the command is
+    rejected for a path the author never wrote, so the message ("use paths under
+    /mnt/user-data") describes a mistake they cannot find in their own command. Observed
+    result: the same command re-sent with cosmetic quoting changes.
+
+    Only fires when the command actually references a shell variable, so a plainly wrong
+    absolute path still gets the plain message.
+    """
+    if not _SHELL_VARIABLE_PATTERN.search(command):
+        return ""
+    suspicious = [p for p in unsafe_paths if p.count("/") <= 2]
+    if not suspicious:
+        return ""
+    return f". This command references a shell variable — if it is unset, `$VAR/sub` expands to just `/sub`, which is what was rejected here. Echo the variable first, or write the path literally under {VIRTUAL_PATH_PREFIX}"
 
 
 def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState | None) -> str:
@@ -1369,7 +1550,7 @@ def _truncate_bash_output(output: str, max_chars: int) -> str:
     return f"{output[:head_len]}{marker}{output[-tail_len:] if tail_len > 0 else ''}"
 
 
-def _truncate_read_file_output(output: str, max_chars: int) -> str:
+def _truncate_read_file_output(output: str, max_chars: int, *, total_lines: int | None = None) -> str:
     """Head-truncate read_file output, preserving the beginning of the file.
 
     Source code and documents are read top-to-bottom; the head contains the
@@ -1378,19 +1559,27 @@ def _truncate_read_file_output(output: str, max_chars: int) -> str:
     The returned string (including the truncation marker) is guaranteed to be
     no longer than max_chars characters. Pass max_chars=0 to disable truncation
     and return the full output unchanged.
+
+    ``total_lines`` makes the hint actionable. The previous marker said only
+    "Use start_line/end_line to read a specific range", and session ``c2518bc7``
+    shows what the model does with that: it asks for ``start_line=60`` with no
+    ``end_line``, gets the head back (see ``read_file_tool``), decides the file is
+    "repeating", and spends an extra step on ``bash wc -l`` just to learn the file
+    length. Naming the length and a *closed* range removes both round-trips.
     """
     if max_chars == 0:
         return output
     if len(output) <= max_chars:
         return output
     total = len(output)
+    hint = f"Use start_line/end_line to read a specific range (file has {total_lines} lines; e.g. start_line=1, end_line={total_lines})" if total_lines else "Use start_line/end_line to read a specific range"
     # Compute the exact worst-case marker length: both numeric fields are at
     # their maximum (total chars), so this is a tight upper bound.
-    marker_max_len = len(f"\n... [truncated: showing first {total} of {total} chars. Use start_line/end_line to read a specific range] ...")
+    marker_max_len = len(f"\n... [truncated: showing first {total} of {total} chars. {hint}] ...")
     kept = max(0, max_chars - marker_max_len)
     if kept == 0:
         return output[:max_chars]
-    marker = f"\n... [truncated: showing first {kept} of {total} chars. Use start_line/end_line to read a specific range] ..."
+    marker = f"\n... [truncated: showing first {kept} of {total} chars. {hint}] ..."
     return f"{output[:kept]}{marker}"
 
 
@@ -1547,8 +1736,11 @@ def ls_tool(runtime: Runtime, description: str, path: str) -> str:
         return f"Error: {e}"
     except FileNotFoundError:
         return f"Error: Directory not found: {requested_path}"
-    except PermissionError:
-        return f"Error: Permission denied: {requested_path}"
+    except PermissionError as e:
+        # Surface the reason: a bare "Permission denied" gives an agent nothing to act on,
+        # and the interesting cases (virtual root is a union, read-only mount) each carry a
+        # specific corrective message.
+        return f"Error: Permission denied: {requested_path}{f' — {e}' if str(e) else ''}"
     except Exception as e:
         return f"Error: Unexpected error listing directory: {_sanitize_error(e, runtime)}"
 
@@ -1604,8 +1796,11 @@ def glob_tool(
         return f"Error: Directory not found: {requested_path}"
     except NotADirectoryError:
         return f"Error: Path is not a directory: {requested_path}"
-    except PermissionError:
-        return f"Error: Permission denied: {requested_path}"
+    except PermissionError as e:
+        # Surface the reason: a bare "Permission denied" gives an agent nothing to act on,
+        # and the interesting cases (virtual root is a union, read-only mount) each carry a
+        # specific corrective message.
+        return f"Error: Permission denied: {requested_path}{f' — {e}' if str(e) else ''}"
     except Exception as e:
         return f"Error: Unexpected error searching paths: {_sanitize_error(e, runtime)}"
 
@@ -1693,11 +1888,22 @@ def grep_tool(
     except FileNotFoundError:
         return f"Error: Directory not found: {requested_path}"
     except NotADirectoryError:
-        return f"Error: Path is not a directory: {requested_path}"
+        # Self-heal instead of bouncing back an error: `grep` takes a directory root, and
+        # pointing it at a single file is the most natural mistake to make (every other file
+        # tool takes a file). Searching that one file is unambiguously what was meant, so do
+        # it and say so, rather than making the agent spend a turn rediscovering the API.
+        return _grep_single_file(
+            runtime,
+            requested_path,
+            pattern,
+            literal=literal,
+            case_sensitive=case_sensitive,
+            max_results=max_results,
+        )
     except re.error as e:
         return f"Error: Invalid regex pattern: {e}"
-    except PermissionError:
-        return f"Error: Permission denied: {requested_path}"
+    except PermissionError as e:
+        return f"Error: Permission denied: {requested_path}{f' — {e}' if str(e) else ''}"
     except Exception as e:
         return f"Error: Unexpected error searching file contents: {_sanitize_error(e, runtime)}"
 
@@ -1751,6 +1957,47 @@ def read_current_file_content(runtime: Runtime | None, path: str) -> str:
     return sandbox.read_file(path)
 
 
+def _read_file_max_chars() -> int:
+    """Active char cap for ``read_file`` output. Read at call time so tests can patch it."""
+    try:
+        from deerflow.config.app_config import get_app_config
+
+        sandbox_cfg = get_app_config().sandbox
+        return sandbox_cfg.read_file_output_max_chars if sandbox_cfg else 50000
+    except Exception:
+        return 50000
+
+
+def _apply_line_range(content: str, start_line: int | None, end_line: int | None) -> str:
+    """Return the requested line window of *content*, prefixed with the applied window.
+
+    Half-open ranges are honoured: ``start_line`` alone means "to end of file" and
+    ``end_line`` alone means "from line 1". The previous implementation required
+    *both* bounds and otherwise fell through with the range silently dropped, so
+    ``start_line=60`` returned the head of the file — which then got truncated to
+    the same opening block the model had already seen. Session ``c2518bc7`` burned
+    9 reads plus a ``bash wc -l`` on one 428-line rules file that way.
+
+    The ``[lines A-B of T]`` prefix is emitted only for ranged reads, so whole-file
+    reads stay byte-identical for ReadFileDedup / read-before-write marks.
+    """
+    if start_line is None and end_line is None:
+        return content
+
+    lines = content.splitlines()
+    total = len(lines)
+    start = 1 if start_line is None else max(1, start_line)
+    end = total if end_line is None else min(total, end_line)
+
+    if start > total:
+        return f"(no such lines: start_line={start_line} is past end of file — the file has {total} lines. Request a range within 1-{total}.)"
+    if end < start:
+        return f"(empty range: end_line={end_line} precedes start_line={start_line} — the file has {total} lines. Request a range within 1-{total}.)"
+
+    window = "\n".join(lines[start - 1 : end])
+    return f"[lines {start}-{end} of {total}]\n{window}"
+
+
 @tool("read_file", parse_docstring=True)
 def read_file_tool(
     runtime: Runtime,
@@ -1769,24 +2016,17 @@ def read_file_tool(
     Args:
         description: Explain why you are reading this file in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the file to read.
-        start_line: Optional starting line number (1-indexed, inclusive). Use with end_line to read a specific range.
-        end_line: Optional ending line number (1-indexed, inclusive). Use with start_line to read a specific range.
+        start_line: Optional starting line number (1-indexed, inclusive). May be used without end_line to read to the end of the file.
+        end_line: Optional ending line number (1-indexed, inclusive). May be used without start_line to read from the first line.
     """
     try:
         requested_path = path
         content = read_current_file_content(runtime, path)
         if not content:
             return "(empty)"
-        if start_line is not None and end_line is not None:
-            content = "\n".join(content.splitlines()[start_line - 1 : end_line])
-        try:
-            from deerflow.config.app_config import get_app_config
-
-            sandbox_cfg = get_app_config().sandbox
-            max_chars = sandbox_cfg.read_file_output_max_chars if sandbox_cfg else 50000
-        except Exception:
-            max_chars = 50000
-        return _truncate_read_file_output(content, max_chars)
+        total_lines = len(content.splitlines())
+        content = _apply_line_range(content, start_line, end_line)
+        return _truncate_read_file_output(content, _read_file_max_chars(), total_lines=total_lines)
     except SandboxError as e:
         return f"Error: {e}"
     except FileNotFoundError:
@@ -1950,7 +2190,8 @@ def str_replace_tool(
     replace_all: bool = False,
 ) -> str:
     """Replace a substring in a file with another substring.
-    If `replace_all` is False (default), the substring to replace must appear **exactly once** in the file.
+    If `replace_all` is False (default), the substring to replace must appear **exactly once**
+    in the file; if it occurs more than once the edit is REJECTED and nothing is written.
 
     READ-BEFORE-WRITE (issue #3857): you must have read the file's CURRENT
     version with read_file first; any write invalidates earlier reads.
@@ -1958,9 +2199,9 @@ def str_replace_tool(
     Args:
         description: Explain why you are replacing the substring in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
         path: The **absolute** path to the file to replace the substring in. ALWAYS PROVIDE THIS PARAMETER SECOND.
-        old_str: The substring to replace. ALWAYS PROVIDE THIS PARAMETER THIRD.
+        old_str: The substring to replace. Must be unique in the file unless `replace_all` is True. ALWAYS PROVIDE THIS PARAMETER THIRD.
         new_str: The new substring. ALWAYS PROVIDE THIS PARAMETER FOURTH.
-        replace_all: Whether to replace all occurrences of the substring. If False, only the first occurrence will be replaced. Default is False.
+        replace_all: Replace every occurrence instead of requiring a unique match. Default is False.
     """
     try:
         sandbox = ensure_sandbox_initialized(runtime)
@@ -1981,6 +2222,17 @@ def str_replace_tool(
             if replace_all:
                 content = content.replace(old_str, new_str)
             else:
+                # Ambiguity guard: silently editing the FIRST of several matches is how
+                # "edited the wrong entry" bugs stay invisible — the file is still valid
+                # and the entry count is unchanged, so structural gates cannot see it.
+                occurrences = content.count(old_str)
+                if occurrences > 1:
+                    return (
+                        f"Error: old_str is not unique in {requested_path}: found {occurrences} occurrences. "
+                        "Refusing to guess which one to edit — nothing was written. "
+                        "Either extend old_str with surrounding context until it matches exactly once, "
+                        "or pass replace_all=True if every occurrence should change."
+                    )
                 content = content.replace(old_str, new_str, 1)
             sandbox.write_file(path, content)
         return "OK"
@@ -2014,3 +2266,440 @@ async def _str_replace_tool_async(
 
 
 str_replace_tool.coroutine = _str_replace_tool_async
+
+
+_POINTER_OPS = ("replace", "add", "remove", "get")
+_POINTER_VALUE_OPS = ("replace", "add")
+
+
+def _json_pointer_tokens(pointer: str) -> list[str]:
+    """Decode an RFC 6901 JSON Pointer into its tokens.
+
+    ``~1`` is ``/`` and ``~0`` is ``~`` — needed because judgment documents are keyed by
+    OCR source names that may contain slashes. Raises ``ValueError`` for a pointer that is
+    not rooted, so a caller-side typo cannot be silently treated as the whole document.
+    """
+    if pointer == "":
+        return []
+    if not pointer.startswith("/"):
+        raise ValueError("JSON Pointer must start with '/' (or be an empty string for the whole document)")
+    return [token.replace("~1", "/").replace("~0", "~") for token in pointer[1:].split("/")]
+
+
+def _pointer_step(container: Any, token: str, *, pointer: str) -> Any:
+    """Resolve one pointer token against *container*."""
+    if isinstance(container, dict):
+        if token not in container:
+            raise KeyError(f"{pointer} — key {token!r} does not exist")
+        return container[token]
+    if isinstance(container, list):
+        try:
+            index = int(token)
+        except ValueError:
+            raise KeyError(f"{pointer} — {token!r} is not a valid list index") from None
+        if not -len(container) <= index < len(container):
+            raise KeyError(f"{pointer} — index {index} is out of range (list has {len(container)} items)")
+        return container[index]
+    raise KeyError(f"{pointer} — cannot descend into a {type(container).__name__} at token {token!r}")
+
+
+def _pointer_resolve_parent(doc: Any, tokens: list[str], *, pointer: str) -> Any:
+    """Return the container that holds the pointer's last token."""
+    node = doc
+    for token in tokens[:-1]:
+        node = _pointer_step(node, token, pointer=pointer)
+    return node
+
+
+def _apply_pointer_patch(doc: Any, patch: dict, *, label: str) -> Any:
+    """Apply one pointer patch to *doc* in place; return the value for ``get``.
+
+    Raises ``ValueError`` / ``KeyError`` with a message naming the pointer, so the caller
+    can abort the whole batch without writing.
+    """
+    pointer = patch["pointer"]
+    op = patch["op"]
+    tokens = _json_pointer_tokens(pointer)
+    if not tokens:
+        raise ValueError(f"{label}: the whole-document pointer '' cannot be {op}d; target a specific member")
+
+    parent = _pointer_resolve_parent(doc, tokens, pointer=pointer)
+    last = tokens[-1]
+
+    if op == "get":
+        return _pointer_step(parent, last, pointer=pointer)
+
+    if op == "remove":
+        if isinstance(parent, dict):
+            if last not in parent:
+                raise KeyError(f"{pointer} — nothing to remove")
+            del parent[last]
+            return None
+        if isinstance(parent, list):
+            _pointer_step(parent, last, pointer=pointer)  # range check
+            del parent[int(last)]
+            return None
+        raise KeyError(f"{pointer} — cannot remove from a {type(parent).__name__}")
+
+    value = patch["value"]
+    if op == "replace":
+        # replace never creates: a missing target means the pointer is wrong, and silently
+        # creating the field would let a typo look like a successful edit.
+        _pointer_step(parent, last, pointer=pointer)
+        if isinstance(parent, list):
+            parent[int(last)] = value
+        else:
+            parent[last] = value
+        return None
+
+    # add: the parent must already exist (checked above by resolving it); only the final
+    # member may be new. "-" appends to a list, per RFC 6901.
+    if isinstance(parent, list):
+        if last == "-":
+            parent.append(value)
+            return None
+        try:
+            index = int(last)
+        except ValueError:
+            raise KeyError(f"{pointer} — {last!r} is not a valid list index") from None
+        if not 0 <= index <= len(parent):
+            raise KeyError(f"{pointer} — index {index} is out of range for insertion (list has {len(parent)} items)")
+        parent.insert(index, value)
+        return None
+    if isinstance(parent, dict):
+        # `add` never overwrites. On a dict keyed by a stable identifier (criteria_parsed's
+        # 四分类 is keyed by 条件ID), `parent[last] = value` would replace the WHOLE entry and
+        # silently drop every field the caller did not mention — worse than the index drift
+        # this keying replaced, because that at least left 同义词/原文 behind as a fingerprint
+        # (thread `3a745b38`). Missing-key `add` is the create path; existing-key edits go
+        # through `replace`, which targets a field and leaves siblings alone.
+        if last in parent:
+            raise KeyError(f"{pointer} — key {last!r} already exists; `add` only creates. To change one field use `replace` on that field (e.g. {pointer}/<field>); to swap the whole entry use `replace` on this same pointer")
+        parent[last] = value
+        return None
+    raise KeyError(f"{pointer} — cannot add to a {type(parent).__name__}")
+
+
+def _pointer_has_numeric_index(patches: list[dict] | None) -> bool:
+    """True when any pointer addresses a list element by position.
+
+    Position is not a stable address: an ``add``/``remove`` anywhere earlier in that list
+    shifts every later index, so "retry the SAME patches" — correct for a dict path — sends
+    the write to a *different* entry. thread `3a745b38` lost 24 single-field writes that way.
+    """
+    for patch in patches or []:
+        if not isinstance(patch, dict):
+            continue
+        pointer = patch.get("pointer")
+        if not isinstance(pointer, str):
+            continue
+        try:
+            tokens = _json_pointer_tokens(pointer)
+        except ValueError:
+            continue
+        for token in tokens:
+            if token == "-":
+                return True
+            try:
+                int(token)
+            except ValueError:
+                continue
+            return True
+    return False
+
+
+def _hash_mismatch_error(requested_path: str, actual: str, form: str | None, supplied: str, patches: list[dict] | None = None) -> str:
+    """The version-check rejection, written so recovery costs one call instead of three.
+
+    The old text reported the current hash and then said "re-read it, recompute the patches
+    against the new content, and retry". Observed effect (thread `93d8a2c6`, seq 1220-1224):
+    the model went and ran ``sha256sum`` to recompute a value this very message had just
+    handed it, then retried the same patches unchanged — three steps to recover from a
+    one-step problem, in a session where every step re-sends the whole context.
+
+    Three things are fixed here:
+
+    * **Say the reported hash is usable.** It is the current one; quoting it back is a valid
+      retry, not a guess.
+    * **Make the advice form-specific.** ``old_str`` patches are matched against text, so a
+      changed file can genuinely invalidate them and a re-read is required. Pointer patches
+      address members by path, so they survive edits elsewhere in the file — re-reading is
+      only needed when the *values* being written were derived from what was read.
+    * **Do not promise that to numeric list indices.** A pointer that indexes a list by
+      position is only stable while that list's length is; the blanket "your pointers are
+      unaffected by edits elsewhere" was false for exactly the case that cost thread
+      `3a745b38` two QC rounds. Those pointers get told to re-confirm instead.
+
+    An empty ``supplied`` is called out separately: that is a missing argument, not a stale
+    one, and telling the caller to "re-read" would send them down the wrong path.
+    """
+    head = f"Error: expected_hash does not match the current content of {requested_path}. Current sha256 starts with {actual[:12]}."
+    if not supplied:
+        return f"{head} No expected_hash was supplied — it is required. Get it with `sha256sum {requested_path} | cut -c1-12` (or reuse the value above, which is current) and retry."
+    if form == "pointer":
+        if _pointer_has_numeric_index(patches):
+            return (
+                f"{head} One or more of your pointers addresses a list element by numeric index. If that list "
+                f"gained or lost entries since you read it, the same index now points to a DIFFERENT entry, so "
+                f"retrying unchanged would write to the wrong place. Re-read (or send a `get`) to confirm which "
+                f"entry each index holds now, then retry with expected_hash={actual[:12]}."
+            )
+        return (
+            f"{head} Your pointers are unaffected by edits elsewhere in the file, so if the values you are writing "
+            f"do not depend on what you read (for example setting a field to a value you were given), retry the SAME "
+            f"patches with expected_hash={actual[:12]}. Re-read first only if a value had to be computed from the "
+            f"previous content, or if a `replace` target may no longer exist."
+        )
+    return f"{head} The file changed since you read it, and `old_str` patches are matched against its text, so they may no longer apply. Re-read the file, rebuild the patches against the new content, then retry with the hash of that read."
+
+
+def _detect_json_indent(text: str) -> int:
+    """Guess the file's indent width so a rewrite does not reformat the whole document.
+
+    A reformatted file shows up as an all-lines diff, which hides the two fields that
+    actually changed and defeats any structural review of the edit.
+    """
+    for line in text.splitlines()[1:]:
+        stripped = line.lstrip(" ")
+        if stripped and stripped != line:
+            return len(line) - len(stripped)
+    return 2
+
+
+def _classify_patch_form(patches: list) -> tuple[str | None, str | None]:
+    """Return ``(form, error)`` where form is ``"text"`` or ``"pointer"``.
+
+    Mixing the two forms in one batch is rejected on purpose: text replacement operates on
+    the serialized document and pointer ops on the parsed one, so alternating them would
+    require re-serializing between patches and the resulting formatting would be
+    unpredictable. Two calls are clearer than one unpredictable call.
+    """
+    if not isinstance(patches, list) or not patches:
+        return None, "Error: patches must be a non-empty list of {'old_str': ..., 'new_str': ...} or {'pointer': ..., 'op': ...} objects"
+    forms = set()
+    for i, patch in enumerate(patches, start=1):
+        if not isinstance(patch, dict):
+            return None, f"Error: patch {i} must be an object"
+        if "pointer" in patch or "op" in patch:
+            forms.add("pointer")
+        elif "old_str" in patch or "new_str" in patch:
+            forms.add("text")
+        else:
+            return None, f"Error: patch {i} must be either {{'old_str', 'new_str'}} (text replacement) or {{'pointer', 'op'}} (JSON object edit)"
+    if len(forms) > 1:
+        return None, "Error: do not mix {'old_str','new_str'} and {'pointer','op'} patches in one call — text replacement and object edits apply to different representations. Split them into two calls."
+    return forms.pop(), None
+
+
+def _validate_pointer_patches(patches: list) -> str | None:
+    """Return an error message for the first invalid pointer patch, or ``None``."""
+    for i, patch in enumerate(patches, start=1):
+        pointer = patch.get("pointer")
+        op = patch.get("op")
+        if not isinstance(pointer, str):
+            return f"Error: patch {i} needs a string 'pointer' (RFC 6901, e.g. /documents/rec/judgments/IN-1/conclusion)"
+        if op not in _POINTER_OPS:
+            return f"Error: patch {i} has an unsupported op {op!r}; supported ops are {', '.join(_POINTER_OPS)}"
+        if op in _POINTER_VALUE_OPS and "value" not in patch:
+            return f"Error: patch {i} ({op}) requires a 'value'"
+        try:
+            _json_pointer_tokens(pointer)
+        except ValueError as exc:
+            return f"Error: patch {i} — {exc}"
+    return None
+
+
+@tool("apply_json_patches", parse_docstring=True)
+def apply_json_patches_tool(
+    runtime: Runtime,
+    description: str,
+    path: str,
+    expected_hash: str,
+    patches: list[dict],
+) -> str:
+    """Apply several edits to one file atomically, under a single version check.
+
+    Use this instead of a chain of `str_replace` calls when you already know every edit a
+    file needs — for example applying a whole QC report's findings to one judgment JSON.
+    A chain of single edits forces a full re-read between each one (every write
+    invalidates the previous read), so N edits cost N whole-file reads plus N writes;
+    this costs one read and one write.
+
+    TWO PATCH FORMS. Pick one per call; mixing them in a single call is rejected.
+
+    1. Text replacement — `{"old_str": ..., "new_str": ...}`. Works on any file. Each
+       `old_str` must appear EXACTLY ONCE at the time it is applied (same rule as
+       `str_replace`); ambiguous matches are rejected rather than guessed. Patches apply
+       in order to the accumulating text, so a later patch sees earlier edits.
+
+    2. JSON object edit — `{"pointer": ..., "op": ..., "value": ...}`. Requires the file to
+       be valid JSON. `pointer` is an RFC 6901 JSON Pointer
+       (`/documents/{source}/judgments/IN-1/conclusion`; `~1` means `/`, `~0` means `~`;
+       numeric tokens index arrays and `-` appends). `op` is one of:
+         * `replace` — overwrite an EXISTING member (never creates; a missing target means
+           the pointer is wrong)
+         * `add`     — create a NEW member, or insert into a list. On an object, a key that
+           already exists is REJECTED: `add` would replace the whole entry and drop every
+           field you did not mention. Change one field with `replace` on that field.
+         * `remove`  — delete an existing member
+         * `get`     — read one member without writing anything
+       Prefer this form for judgment/criteria JSON: one conclusion change usually has to
+       move `reason`, `evidence` and `exclusion_triggered` with it, and doing that by
+       string match is how "changed the reason, forgot the conclusion" happens. `get` also
+       lets you re-check one entry without re-reading the whole file.
+
+    ADDRESS BY KEY, NOT BY POSITION. Object keys are stable addresses: `/judgments/IN-1/` and
+    `/四分类/排除_可从病例获取/EX-12-1/` hit that entry or fail loudly, no matter what was added
+    or removed elsewhere. A numeric list index is NOT a stable address — it stays in range
+    and keeps succeeding while pointing at a different element, so a wrong write leaves no
+    trace. When a collection's entries carry a stable identifier, address them by that key.
+    ⛔ If you must use a numeric index, re-confirm it after anything changes that list's
+    length; an `add` shifts every later index by one, across calls as well as within a batch.
+
+    ATOMIC: if any patch does not apply, nothing is written at all. A half-applied
+    structured document is worse than an unapplied one, because the file stays
+    syntactically valid and entry counts stay correct, so structural checks cannot see
+    that only some edits landed.
+
+    VERSION CHECKED: `expected_hash` must match the file's current content (full sha256
+    hex, or its first 12 characters). This is the only defence against applying edits
+    computed from a stale read. Note what it does NOT check: it answers "has anyone else
+    changed this file", not "does my pointer still address what I meant". A stale numeric
+    index passes the hash check and writes to the wrong entry.
+
+    HOW TO GET `expected_hash` — no file tool returns it, so obtain it explicitly:
+
+        bash: sha256sum <path> | cut -c1-12
+
+    Run that immediately before this call, AFTER any write of your own has landed.
+    ⛔ Never guess a hash and never reuse one from earlier in the conversation: every write
+    changes it, and a fabricated value costs a rejected call plus a recovery round-trip.
+    On mismatch the tool reports the actual hash, and the error tells you whether you can
+    retry with it directly or have to re-read first.
+
+    Object edits keep the file's existing indent and do not escape non-ASCII, so the diff
+    shows only the members you changed.
+
+    Args:
+        description: Explain why you are editing the file in short words. ALWAYS PROVIDE THIS PARAMETER FIRST.
+        path: The **absolute** path to the file to patch. ALWAYS PROVIDE THIS PARAMETER SECOND.
+        expected_hash: sha256 of the file's current content (full hex or 12-char prefix). ALWAYS PROVIDE THIS PARAMETER THIRD.
+        patches: List of `{"old_str", "new_str"}` OR of `{"pointer", "op", "value"}`, applied in order. ALWAYS PROVIDE THIS PARAMETER FOURTH.
+    """
+    import hashlib
+
+    form, form_error = _classify_patch_form(patches)
+    if form_error is not None:
+        return form_error
+
+    if form == "pointer":
+        pointer_error = _validate_pointer_patches(patches)
+        if pointer_error is not None:
+            return pointer_error
+    else:
+        for i, patch in enumerate(patches, start=1):
+            if "old_str" not in patch or "new_str" not in patch:
+                return f"Error: patch {i} must be an object with both 'old_str' and 'new_str'"
+            if not isinstance(patch["old_str"], str) or not patch["old_str"]:
+                return f"Error: patch {i} has an empty old_str; an empty match would insert between every character"
+            if not isinstance(patch["new_str"], str):
+                return f"Error: patch {i} has a non-string new_str"
+
+    try:
+        sandbox = ensure_sandbox_initialized(runtime)
+        ensure_thread_directories_exist(runtime)
+        requested_path = path
+        if is_local_sandbox(runtime):
+            thread_data = get_thread_data(runtime)
+            validate_local_tool_path(path, thread_data)
+            if not _is_custom_mount_path(path):
+                path = _resolve_and_validate_user_data_path(path, thread_data)
+            # Custom mount paths are resolved by LocalSandbox._resolve_path()
+
+        # One lock for the whole batch: read, verify, patch and write must not interleave
+        # with another writer, or the version check would guard nothing.
+        with get_file_operation_lock(sandbox, path):
+            content = sandbox.read_file(path)
+            actual = hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+            supplied = (expected_hash or "").strip().lower()
+            if not supplied or not (actual == supplied or actual.startswith(supplied)):
+                return _hash_mismatch_error(requested_path, actual, form, supplied, patches)
+
+            if form == "pointer":
+                try:
+                    document = json.loads(content or "")
+                except json.JSONDecodeError as exc:
+                    return f"Error: {requested_path} is not valid JSON ({exc}), so object edits cannot be applied. Nothing was written. Use the {{'old_str','new_str'}} form for non-JSON files, or fix the file first."
+
+                gets: list[str] = []
+                mutated = False
+                for i, patch in enumerate(patches, start=1):
+                    label = f"patch {i} of {len(patches)}"
+                    try:
+                        got = _apply_pointer_patch(document, patch, label=label)
+                    except (KeyError, ValueError, TypeError) as exc:
+                        detail = exc.args[0] if exc.args else str(exc)
+                        return f"Error: {label} did not apply — {detail}. Nothing was written."
+                    if patch["op"] == "get":
+                        rendered = json.dumps(got, ensure_ascii=False)
+                        gets.append(f"{patch['pointer']} = {rendered[:2000]}")
+                    else:
+                        mutated = True
+
+                if not mutated:
+                    # A read-only batch must not touch the file: `get` exists so one entry
+                    # can be re-checked without a whole-file read, not as a write path.
+                    joined = "\n".join(gets)
+                    return f"OK: read {len(gets)} pointer(s) from {requested_path}; nothing written.\n{joined}"
+
+                patched = json.dumps(document, ensure_ascii=False, indent=_detect_json_indent(content or ""))
+                sandbox.write_file(path, patched)
+                new_hash = hashlib.sha256(patched.encode("utf-8")).hexdigest()
+                summary = f"OK: applied {len(patches)} patch(es) to {requested_path} in one write. New content sha256 starts with {new_hash[:12]}."
+                return f"{summary}\n" + "\n".join(gets) if gets else summary
+
+            patched = content
+            for i, patch in enumerate(patches, start=1):
+                old_str, new_str = patch["old_str"], patch["new_str"]
+                occurrences = patched.count(old_str)
+                if occurrences == 0:
+                    return (
+                        f"Error: patch {i} of {len(patches)} did not apply — old_str not found in {requested_path}. "
+                        "Nothing was written. Note that earlier patches in this batch may have changed the text a "
+                        "later patch expected; check the ordering."
+                    )
+                if occurrences > 1:
+                    return f"Error: patch {i} of {len(patches)} is ambiguous — old_str occurs {occurrences} times in {requested_path}. Nothing was written. Extend old_str with surrounding context until it matches exactly once."
+                patched = patched.replace(old_str, new_str, 1)
+
+            sandbox.write_file(path, patched)
+            new_hash = hashlib.sha256(patched.encode("utf-8")).hexdigest()
+        return f"OK: applied {len(patches)} patch(es) to {requested_path} in one write. New content sha256 starts with {new_hash[:12]}."
+    except SandboxError as e:
+        return f"Error: {e}"
+    except FileNotFoundError:
+        return f"Error: File not found: {requested_path}"
+    except PermissionError:
+        return f"Error: Permission denied accessing file: {requested_path}"
+    except Exception as e:
+        return f"Error: Unexpected error applying patches: {_sanitize_error(e, runtime)}"
+
+
+async def _apply_json_patches_tool_async(
+    runtime: Runtime,
+    description: str,
+    path: str,
+    expected_hash: str,
+    patches: list[dict],
+) -> str:
+    return await _run_sync_tool_after_async_sandbox_init(
+        apply_json_patches_tool.func,
+        runtime,
+        description,
+        path,
+        expected_hash,
+        patches,
+    )
+
+
+apply_json_patches_tool.coroutine = _apply_json_patches_tool_async

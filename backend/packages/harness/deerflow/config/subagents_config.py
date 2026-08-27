@@ -4,6 +4,9 @@ import logging
 
 from pydantic import BaseModel, Field
 
+from deerflow.config.summarization_config import SummarizationConfig
+from deerflow.config.token_budget_config import TokenBudgetConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +71,57 @@ class CustomSubagentConfig(BaseModel):
     )
 
 
+class SubagentLoopDetectionConfig(BaseModel):
+    """Loop detection for subagent runtimes (off by default).
+
+    The lead agent has had ``LoopDetectionMiddleware`` from the start, but
+    ``build_subagent_runtime_middlewares`` never included it — which is why a judgment
+    subagent could run the same ``uncertain_recheck.py`` command 12 times with nobody
+    interrupting it. Thresholds are reused from the global ``loop_detection`` section;
+    only the on/off switch and the counting mode live here.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description="Attach LoopDetectionMiddleware to subagent runtimes (thresholds come from the global loop_detection section)",
+    )
+    cumulative_counting: bool = Field(
+        default=True,
+        description=(
+            "Count identical tool-call sets cumulatively rather than only within the sliding "
+            "window. On by default for subagents: their repeats are interleaved with reads and "
+            "greps, so the window (20) evicts the hash before the counter can reach the limit."
+        ),
+    )
+    mutation_reset: bool = Field(
+        default=True,
+        description=(
+            "Restart a call set's repeat counter when a different call set mutated state since "
+            "its last occurrence. On by default for subagents: their fix->verify cycles "
+            "(sha256sum / gate script re-run after each apply_json_patches) are prescribed "
+            "workflow, and without the reset every such cycle trips warn_threshold=3. The "
+            "budget (loop_detection.mutation_reset_budget) still bounds pathological re-checking."
+        ),
+    )
+
+
+class SubagentGracefulStopConfig(BaseModel):
+    """What happens when a subagent hits a resource ceiling.
+
+    ``graceful`` is what the token-budget hard stop already does: strip tool_calls so the
+    model must produce a final answer from what it has. That converts "6.36M tokens then
+    FAILED, then an automatic retry burning another 5.21M" into one bounded, partial —
+    but usable — result.
+    """
+
+    retry_resource_ceiling_failures: bool = Field(
+        default=False,
+        description=(
+            "Whether ``task`` retries a subagent that failed by exhausting a resource ceiling (recursion/max_turns, token budget). Off by default for the same reason timeouts are never retried: re-running burns the same ceiling again."
+        ),
+    )
+
+
 class SubagentsAppConfig(BaseModel):
     """Configuration for the subagent system."""
 
@@ -80,6 +134,22 @@ class SubagentsAppConfig(BaseModel):
         default=None,
         ge=1,
         description="Optional default max-turn override for all subagents (None = keep builtin defaults)",
+    )
+    loop_detection: SubagentLoopDetectionConfig = Field(
+        default_factory=SubagentLoopDetectionConfig,
+        description="Loop detection for subagent runtimes",
+    )
+    summarization: SummarizationConfig = Field(
+        default_factory=SummarizationConfig,
+        description=("Context summarization for subagent runtimes. Separate from the lead agent's ``summarization`` section so thresholds can be looser: a subagent is a single long task, not a conversation. Off by default."),
+    )
+    token_budget: TokenBudgetConfig = Field(
+        default_factory=TokenBudgetConfig,
+        description=("Per-task token budget for subagent runtimes. Scoped per task (not per run), so one task cannot spend the whole run's allowance. Off by default."),
+    )
+    graceful_stop: SubagentGracefulStopConfig = Field(
+        default_factory=SubagentGracefulStopConfig,
+        description="Behaviour when a subagent hits a resource ceiling",
     )
     agents: dict[str, SubagentOverrideConfig] = Field(
         default_factory=dict,

@@ -198,6 +198,38 @@ def _build_runtime_middlewares(
 
         tail.append(ReadBeforeWriteMiddleware())
 
+    # Ordered BEFORE read_file_dedup: a blocked repeat whole-file read must not reach the
+    # sandbox at all (the point is to not move the bytes), and dedup's bookkeeping should
+    # only ever see reads that actually happened. Both are wrap_tool_call-only, so neither
+    # adds a graph node — the recursion_limit/turn ratio recorded in config.yaml is
+    # unaffected. Nothing is constructed when disabled.
+    if app_config.read_file_policy.enabled:
+        from deerflow.agents.middlewares.read_file_policy_middleware import ReadFilePolicyMiddleware
+
+        tail.append(ReadFilePolicyMiddleware(config=app_config.read_file_policy))
+
+    # Same placement rationale: refuse before the command runs, and stay a wrap_tool_call
+    # so no graph node is added. Deliberately NOT in sandbox/tools.py's bash validators —
+    # those run only for the local sandbox, leaving AIO/container deployments uncovered.
+    if app_config.bash_write_policy.enabled:
+        from deerflow.agents.middlewares.bash_write_policy_middleware import BashWritePolicyMiddleware
+
+        tail.append(BashWritePolicyMiddleware(config=app_config.bash_write_policy))
+
+    # Ordered AFTER read-before-write so this middleware sits closer to the tool and hashes
+    # the real payload rather than something another middleware already rewrote.
+    #
+    # It is NOT ordered this way to protect the read mark: that mark is re-read from disk
+    # (`ReadBeforeWriteMiddleware._attach_read_mark` calls its `_content_reader`), so it is
+    # independent of the message body and a dedup reference carries a valid one either way —
+    # deliberately, since dropping it would force a re-read of content the model already has.
+    # Nothing is constructed when disabled, so a deployment that does not opt in pays no cost
+    # and sees no behaviour change.
+    if app_config.read_file_dedup.enabled:
+        from deerflow.agents.middlewares.read_file_dedup_middleware import ReadFileDedupMiddleware
+
+        tail.append(ReadFileDedupMiddleware(config=app_config.read_file_dedup))
+
     tail.append(ToolErrorHandlingMiddleware())
 
     return [*outer_wrappers, *thread_hooks, *tail]
@@ -251,6 +283,41 @@ def build_subagent_runtime_middlewares(
         from deerflow.agents.middlewares.deferred_tool_filter_middleware import DeferredToolFilterMiddleware
 
         middlewares.append(DeferredToolFilterMiddleware(deferred_setup.deferred_names, deferred_setup.catalog_hash))
+
+    # ── Subagent runtime guards (Phase 1) ────────────────────────────────────
+    # The lead agent has had all three of these from the start; the subagent chain had
+    # none, which is how a single judgment task reached 6.36M tokens over 83 steps with
+    # nobody compacting its context, capping its spend, or breaking its gate-script loop.
+    # All three are opt-in so an untouched deployment keeps the exact chain it had.
+    subagents_config = app_config.subagents
+
+    if subagents_config.loop_detection.enabled and app_config.loop_detection.enabled:
+        from deerflow.agents.middlewares.loop_detection_middleware import LoopDetectionMiddleware
+
+        # Thresholds come from the global section; the counting mode and the
+        # mutation-aware reset differ — a subagent's repeats are spaced wider than the
+        # 20-call window (reads and greps in between), so window-only counting never
+        # reaches the limit; and its fix->verify cycles re-issue identical commands after
+        # each mutation, which the reset recognizes as re-checks rather than loops.
+        middlewares.append(
+            LoopDetectionMiddleware.from_config(
+                app_config.loop_detection,
+                cumulative_counting=subagents_config.loop_detection.cumulative_counting,
+                mutation_reset=subagents_config.loop_detection.mutation_reset,
+            )
+        )
+
+    if subagents_config.summarization.enabled:
+        from deerflow.agents.middlewares.summarization_middleware import build_summarization_middleware
+
+        summarization = build_summarization_middleware(subagents_config.summarization, app_config=app_config)
+        if summarization is not None:
+            middlewares.append(summarization)
+
+    if subagents_config.token_budget.enabled:
+        from deerflow.agents.middlewares.token_budget_middleware import TokenBudgetMiddleware
+
+        middlewares.append(TokenBudgetMiddleware.from_config(subagents_config.token_budget))
 
     # Same provider safety-termination guard the lead agent uses — subagents
     # are equally exposed to truncated tool_calls returned with

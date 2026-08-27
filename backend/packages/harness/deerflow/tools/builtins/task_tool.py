@@ -38,9 +38,185 @@ SUBAGENT_MAX_RETRIES = 1
 # subagent times out, so the lead agent can salvage completed work.
 SUBAGENT_PARTIAL_RESULT_LIMIT = 4000
 
+# ── prompt_file: hand the assignment over by path instead of by value ────────────
+# Some delegation templates are contracts that must reach the subagent **verbatim** —
+# `eligibility-judgment`'s judge-delegation template is ~12.7k chars, and paraphrasing it
+# has a failure of record (session `9a83ccc9`: the lead re-told it in 1.8k chars, dropped
+# one of the gate commands, and the subagent invented its own output schema).
+#
+# Requiring the lead to type it out satisfies verbatimness but bills for it. Session
+# `247a535f`: the three-way judgment dispatch was the single slowest lead call of the
+# session — 143.6s and 15,265 output tokens for one AIMessage carrying three ~7.5k-char
+# prompts. The lead's own reasoning was 56% of its output tokens across the run, so this
+# is the dominant lead-side cost, and it buys nothing: the text is a fixed template.
+#
+# With `prompt_file` the template is rendered to a file mechanically (by a skill script)
+# and the lead passes a path. That is *more* faithful than hand-copying, not less: no
+# model ever re-emits the bytes. `prompt` stays supported and unchanged for the ordinary
+# ad-hoc case.
+#
+# Same prefix restriction as `expected_outputs`, for the same reason: a path outside
+# user-data would turn delegation into a host-file read. Skills are readable inputs but
+# are deliberately excluded — a prompt is a rendered artifact, and pointing at a skill
+# file would send the *template* (placeholders unresolved) rather than the assignment.
+PROMPT_FILE_PREFIX = "/mnt/user-data/"
+# A prompt is an assignment, not a payload. The largest real template is ~12.7k chars;
+# 200k leaves room for far bigger ones while still refusing "the lead pointed at an OCR
+# dump", which would blow the subagent's context on its very first message.
+PROMPT_FILE_MAX_CHARS = 200_000
+
 # Cache subagent token usage by tool_call_id so TokenUsageMiddleware can
 # write it back to the triggering AIMessage's usage_metadata.
 _subagent_usage_cache: dict[str, dict[str, int]] = {}
+
+# ── expected_outputs: mechanical post-condition on a subagent's artifacts ────────
+# A subagent reporting COMPLETED is a self-assessment, and thread `88df83a8` showed what
+# that is worth: the EX judgment subagent never wrote
+# `judgments_draft_MCRC-2150006_EX.json`, wrote a self-invented `qc_review_report.json`
+# instead, and returned `completed`. The lead only found out 8 minutes later by running
+# the structure gate itself.
+#
+# Declared paths must live under the sandbox's user-data prefix. Two reasons, both hard:
+# a declaration pointing at the host filesystem would turn a completion check into a host
+# probe, and anything outside user-data is not a task artifact (skills are read-only
+# inputs, `/tmp` is not delivered).
+EXPECTED_OUTPUTS_PREFIX = "/mnt/user-data/"
+EXPECTED_OUTPUTS_LIMIT = 10
+# Marker in the failure message. Kept greppable so offline analysis can separate
+# "the subagent produced nothing" from ordinary failures.
+EXPECTED_OUTPUTS_FAILURE_MARKER = "required outputs missing/empty"
+
+
+def _normalize_expected_outputs(declared: list[str] | None) -> tuple[list[str], str | None]:
+    """Validate + de-duplicate an ``expected_outputs`` declaration.
+
+    Returns ``(paths, error)``; exactly one side is populated. Validation runs at the tool
+    boundary rather than inside the executor so a malformed declaration costs nothing —
+    failing after the subagent ran would burn a whole task's allowance to report a typo.
+    """
+    if not declared:
+        return [], None
+
+    if len(declared) > EXPECTED_OUTPUTS_LIMIT:
+        return [], f"Error: expected_outputs accepts at most {EXPECTED_OUTPUTS_LIMIT} paths, got {len(declared)}. Declare only the artifacts that make the task worthless if absent."
+
+    seen: set[str] = set()
+    paths: list[str] = []
+    for entry in declared:
+        if not isinstance(entry, str) or not entry.strip():
+            return [], f"Error: expected_outputs entries must be non-empty absolute paths under {EXPECTED_OUTPUTS_PREFIX}, got {entry!r}."
+        path = entry.strip()
+        if not path.startswith(EXPECTED_OUTPUTS_PREFIX):
+            return [], f"Error: expected_outputs path {path!r} must be an absolute path under {EXPECTED_OUTPUTS_PREFIX}."
+        if ".." in path.split("/"):
+            return [], f"Error: expected_outputs path {path!r} must not contain '..'; give the resolved path under {EXPECTED_OUTPUTS_PREFIX}."
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths, None
+
+
+def _resolve_prompt_source(runtime: Runtime, prompt: str | None, prompt_file: str | None) -> tuple[str | None, str | None]:
+    """Return ``(prompt_text, error)`` for the ``prompt`` / ``prompt_file`` pair.
+
+    Exactly one side is populated. Validation and reading both happen at the tool
+    boundary so a bad declaration costs no subagent allowance — the same rule
+    ``_normalize_expected_outputs`` follows.
+    """
+    has_prompt = bool(prompt and prompt.strip())
+    has_file = bool(prompt_file and prompt_file.strip())
+
+    if has_prompt and has_file:
+        return None, "Error: pass either prompt or prompt_file, not both. Use prompt_file when a skill script rendered the assignment to a file; use prompt for an inline assignment."
+    if not has_prompt and not has_file:
+        return None, "Error: task requires a prompt (inline) or prompt_file (path to a rendered assignment)."
+    if has_prompt:
+        return cast(str, prompt), None
+
+    path = cast(str, prompt_file).strip()
+    if not path.startswith(PROMPT_FILE_PREFIX):
+        return None, f"Error: prompt_file {path!r} must be an absolute path under {PROMPT_FILE_PREFIX}."
+    if ".." in path.split("/"):
+        return None, f"Error: prompt_file {path!r} must not contain '..'; give the resolved path under {PROMPT_FILE_PREFIX}."
+
+    try:
+        from deerflow.sandbox.tools import read_current_file_content
+
+        content = read_current_file_content(runtime, path)
+    except FileNotFoundError:
+        return None, f"Error: prompt_file not found: {path}. Render the assignment to that path first, then delegate."
+    except Exception as e:  # noqa: BLE001 - surfaced to the model, never raised
+        return None, f"Error: could not read prompt_file {path}: {e}"
+
+    if not content or not content.strip():
+        return None, f"Error: prompt_file {path} is empty. A subagent given an empty assignment would invent one."
+    if len(content) > PROMPT_FILE_MAX_CHARS:
+        return None, f"Error: prompt_file {path} is {len(content):,} chars, over the {PROMPT_FILE_MAX_CHARS:,} limit. A prompt is an assignment, not a data payload — pass data by path inside the prompt instead."
+    return content, None
+
+
+def _is_retryable_failure(stop_reason: str | None, app_config: "AppConfig | None") -> bool:
+    """Whether ``task`` should spend a retry on this failure.
+
+    A resource-ceiling failure (recursion/max_turns, token budget) is not retried by
+    default, for exactly the reason timeouts never were: the work was too big for the
+    allowance, so running it again spends the same allowance and fails the same way. In
+    session ``d393714d`` the unconditional retry turned a 6.36M-token failure into
+    11.57M. Deployments that want the old behaviour can set
+    ``subagents.graceful_stop.retry_resource_ceiling_failures: true``.
+    """
+    from deerflow.subagents.stop_reasons import is_resource_ceiling
+
+    if not is_resource_ceiling(stop_reason):
+        return True
+    config = app_config
+    if config is None:
+        try:
+            from deerflow.config import get_app_config
+
+            config = get_app_config()
+        except Exception:
+            return False
+    try:
+        return bool(config.subagents.graceful_stop.retry_resource_ceiling_failures)
+    except AttributeError:
+        return False
+
+
+# Cap on the failure text carried into a retry. The messages worth forwarding are the
+# mechanical ones (artifact gate, tool errors); a stack trace or a dumped payload would
+# push the actual assignment out of the model's attention.
+_RETRY_REASON_CHAR_BUDGET = 1200
+
+
+def _retry_prompt(prompt: str, error: str | None) -> str:
+    """The original assignment plus why the previous attempt was rejected.
+
+    A retry re-ran the byte-identical prompt, which means the second attempt could not
+    know what the first one got wrong — and a subagent whose context is isolated has no
+    other channel to learn it. Thread ``7512ebd2``: both judgment tasks failed the
+    artifact gate for writing a self-invented filename (``judgment_IN.md`` /
+    ``judgments_EX.json``) instead of the declared ``judgments_draft_{id}_{TRACK}.json``;
+    each retry received the same prompt, made the same substitution, and failed the same
+    gate. Four attempts, ~7.5M tokens, no artifact.
+
+    Only the failure text is added — never a rewritten assignment. The prompt is the
+    lead's contract with the subagent, and editing it here would silently compete with
+    the delegation template that produced it.
+    """
+    if not error or not error.strip():
+        return prompt
+    reason = error.strip()
+    if len(reason) > _RETRY_REASON_CHAR_BUDGET:
+        reason = reason[:_RETRY_REASON_CHAR_BUDGET] + "\n…(truncated)"
+    return (
+        f"{prompt}\n\n"
+        "⛔ **RETRY — the previous attempt at this exact task was REJECTED.** Reason reported by the "
+        f"mechanical check:\n\n{reason}\n\n"
+        "Fix that specific defect this time. The assignment above is unchanged and still authoritative: "
+        "produce the declared artifacts at the declared paths, and do not substitute a file of your own naming."
+    )
 
 
 def _token_usage_cache_enabled(app_config: "AppConfig | None") -> bool:
@@ -223,9 +399,11 @@ def _extract_partial_result(ai_messages: list[dict] | None) -> str:
 async def task_tool(
     runtime: Runtime,
     description: str,
-    prompt: str,
     subagent_type: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
+    prompt: str | None = None,
+    prompt_file: str | None = None,
+    expected_outputs: list[str] | None = None,
 ) -> str:
     """Delegate a task to a specialized subagent that runs in its own context.
 
@@ -259,9 +437,19 @@ async def task_tool(
 
     Args:
         description: A short (3-5 word) description of the task for logging/display. ALWAYS PROVIDE THIS PARAMETER FIRST.
-        prompt: The task description for the subagent. Be specific and clear about what needs to be done. ALWAYS PROVIDE THIS PARAMETER SECOND.
-        subagent_type: The type of subagent to use. ALWAYS PROVIDE THIS PARAMETER THIRD.
+        subagent_type: The type of subagent to use. ALWAYS PROVIDE THIS PARAMETER SECOND.
+        prompt: The task description for the subagent. Be specific and clear about what needs to be done. Provide either this or prompt_file, never both.
+        prompt_file: Absolute path (under `/mnt/user-data/`) to a file holding the assignment;
+            the subagent receives that file's contents as its prompt. Use it when a skill
+            script rendered the assignment to a file, so a long fixed delegation template
+            reaches the subagent verbatim without you retyping it.
+        expected_outputs: Optional list of absolute file paths the subagent MUST have written
+            for the task to count as done. Each path must be under `/mnt/user-data/` (at most 10).
+            When any declared path is missing or empty, the task is reported as FAILED with the
+            missing paths named, instead of trusting the subagent's own "completed" claim.
+            Declare a path whenever the task's whole point is producing that file.
     """
+    expected_output_paths, expected_outputs_error = _normalize_expected_outputs(expected_outputs)
     runtime_app_config = _get_runtime_app_config(runtime)
     cache_token_usage = _token_usage_cache_enabled(runtime_app_config)
     available_subagent_names = get_available_subagent_names(app_config=runtime_app_config) if runtime_app_config is not None else get_available_subagent_names()
@@ -275,6 +463,16 @@ async def task_tool(
         host_bash_allowed = is_host_bash_allowed(runtime_app_config) if runtime_app_config is not None else is_host_bash_allowed()
         if not host_bash_allowed:
             return f"Error: {LOCAL_BASH_SUBAGENT_DISABLED_MESSAGE}"
+    # Reported after the subagent-type checks so their (pre-existing, more fundamental)
+    # errors keep priority, but still before any subagent is dispatched: a malformed
+    # declaration must cost zero task allowance.
+    if expected_outputs_error is not None:
+        return expected_outputs_error
+
+    resolved_prompt, prompt_error = _resolve_prompt_source(runtime, prompt, prompt_file)
+    if prompt_error is not None:
+        return prompt_error
+    prompt = cast(str, resolved_prompt)
 
     # Build config overrides
     overrides: dict = {}
@@ -323,6 +521,10 @@ async def task_tool(
     oauth_provider = parent_context.get("oauth_provider")
     oauth_id = parent_context.get("oauth_id")
     run_id = parent_context.get("run_id")
+    # Run-scoped RunJournal (written into the lead context by runtime/runs/worker.py).
+    # Forwarded so middleware executing inside the subagent can persist its own
+    # `middleware:*` audit events instead of silently dropping them.
+    run_journal = parent_context.get("__run_journal")
     deerflow_trace_id = normalize_trace_id(parent_context.get(DEERFLOW_TRACE_METADATA_KEY)) or normalize_trace_id(metadata.get(DEERFLOW_TRACE_METADATA_KEY)) or get_current_trace_id()
 
     parent_available_skills = metadata.get("available_skills")
@@ -368,6 +570,10 @@ async def task_tool(
         "oauth_id": oauth_id,
         "run_id": run_id,
         "deerflow_trace_id": deerflow_trace_id,
+        "run_journal": run_journal,
+        # Part of executor_kwargs (not a call argument) so the retry branch below, which
+        # rebuilds SubagentExecutor from the same dict, re-checks the same artifacts.
+        "expected_outputs": expected_output_paths,
     }
     if resolved_app_config is not None:
         executor_kwargs["app_config"] = resolved_app_config
@@ -440,22 +646,31 @@ async def task_tool(
             elif result.status == SubagentStatus.FAILED:
                 _report_subagent_usage(runtime, result)
                 cleanup_background_task(task_id)
-                if retries_left > 0:
+                stop_reason = getattr(result, "stop_reason", None)
+                if retries_left > 0 and _is_retryable_failure(stop_reason, runtime_app_config):
                     attempt += 1
                     retries_left -= 1
                     retry_task_id = f"{tool_call_id}-retry{attempt}"
                     logger.warning(f"[trace={trace_id}] Task {task_id} failed, retrying as {retry_task_id} ({retries_left} retries left). Error: {result.error}")
-                    writer({"type": "task_failed", "task_id": task_id, "error": result.error, "usage": usage, "retrying": True})
+                    writer({"type": "task_failed", "task_id": task_id, "error": result.error, "usage": usage, "retrying": True, "stop_reason": stop_reason})
                     # Reset execution state for the retry attempt.
                     executor = SubagentExecutor(**executor_kwargs)
-                    task_id = executor.execute_async(prompt, task_id=retry_task_id)
+                    task_id = executor.execute_async(_retry_prompt(prompt, result.error), task_id=retry_task_id)
                     poll_count = 0
                     last_status = None
                     last_message_count = 0
                     writer({"type": "task_started", "task_id": task_id, "description": description})
                     continue
                 _cache_subagent_usage(tool_call_id, usage, enabled=cache_token_usage)
-                writer({"type": "task_failed", "task_id": task_id, "error": result.error, "usage": usage})
+                writer({"type": "task_failed", "task_id": task_id, "error": result.error, "usage": usage, "stop_reason": stop_reason})
+                if stop_reason:
+                    logger.error(f"[trace={trace_id}] Task {task_id} failed with stop_reason={stop_reason} (not retried — a retry would hit the same ceiling): {result.error}")
+                    return (
+                        f"Task failed. Error: {result.error}\n\n"
+                        f"Stop reason: {stop_reason} — the task ran out of its allowance rather than hitting a "
+                        "transient problem, so it was NOT retried. Read the partial output first, then re-dispatch "
+                        "only the part that can still make progress; a full re-run would spend the same allowance again."
+                    )
                 logger.error(f"[trace={trace_id}] Task {task_id} failed (no retries left): {result.error}")
                 return f"Task failed. Error: {result.error}"
             elif result.status == SubagentStatus.CANCELLED:
